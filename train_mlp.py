@@ -57,6 +57,7 @@ parser.add_argument('--beta_ema', type=float, default=0.)
 parser.add_argument('--ldims', type=int, nargs='*', default=[1024, 1024])
 parser.add_argument('--ep_anneal', type=int, default=10)
 parser.add_argument('--lr_decay_ratio', type=float, default=0.2)
+parser.add_argument('--save_at', nargs='*', type=int, default=[1, 10, 50, 100])
 parser.set_defaults(tensorboard=True)
 
 best_prec1, total_steps, writer = 0, 0, None
@@ -165,8 +166,11 @@ def main():
         if model.beta_ema > 0:
             state['avg_params'] = model.avg_param
             state['steps_ema'] = model.steps_ema
-
-        save_checkpoint(state, is_best)
+        if epoch in args.save_at:
+            filename = 'checkpoint_{}.pth.tar'.format(epoch)
+        else:
+            filename = 'checkpoint.pth.tar'
+        save_checkpoint(state, is_best, filename=filename)
     print('Best accuracy: ', best_prec1)
     if args.tensorboard:
         writer.close()
@@ -200,7 +204,7 @@ def train(train_loader, model, criterion, optimizer, epoch, thres_stds=()):
         # measure accuracy and record loss
         prec1 = accuracy(output.data, target, topk=(1,))[0]
         losses.update(loss.item(), input_.size(0))
-        top1.update(prec1[0], input_.size(0))
+        top1.update(prec1.item(), input_.size(0))
 
         # compute gradient and do SGD step
         optimizer.zero_grad()
