@@ -6,6 +6,7 @@ import time
 from utils import AverageMeter, accuracy
 from models import MLP, LeNet5, BaseCNN
 from losses import CrossEntropyLossWithAnnealing
+from optimizers import VProp
 
 import torch
 import torch.backends.cudnn as cudnn
@@ -14,7 +15,9 @@ import torchvision.transforms as transforms
 from tensorboardX import SummaryWriter
 
 
-def set_directory(name: str, type_net: str, dof: str) -> (str, str):
+def set_directory(name: str,
+                  type_net: str,
+                  dof: str) -> (str, str):
     name += f'_{type_net}'
     if type_net == 'hs':
         name += f'_dof{dof}'
@@ -161,16 +164,33 @@ def train_single_epoch(train_loader: object,
             input_var = torch.autograd.Variable(input_.view(shape))
         target_var = torch.autograd.Variable(target)
 
-        output = model(input_var)
-        loss = criterion(output, target_var, model)
+        if isinstance(optimizer, VProp):
+            # Calculate noisy loss
+            optimizer.add_noise_to_parameters()
+            output = model(input_var)
+            loss = criterion(output, target_var, model)
+
+            # Do an update
+            optimizer.zero_grad()
+            loss.backward()
+            optimizer.remove_noise_from_parameters()
+            optimizer.step()
+
+            # Calculate clean loss to update metrics
+            output = model(input_var)
+            loss = criterion(output, target_var, model)
+
+        else:
+            output = model(input_var)
+            loss = criterion(output, target_var, model)
+
+            optimizer.zero_grad()
+            loss.backward()
+            optimizer.step()
 
         prec1 = accuracy(output.data, target, topk=(1,))[0]
         losses.update(loss.item(), input_.size(0))
         top1.update(prec1.item(), input_.size(0))
-
-        optimizer.zero_grad()
-        loss.backward()
-        optimizer.step()
 
         if clip_var:
             for k, layer in enumerate(model.layers):
@@ -281,10 +301,10 @@ def cli():
 @click.option('--ldims', type=list, default=[1024, 1024])
 @click.option('--ep_anneal', type=int, default=10)
 def train_mlp(**kwargs):
+    name, directory = set_directory(name=kwargs['name'],
+                                    type_net=kwargs['type_net'],
+                                    dof=kwargs['dof'])
     if kwargs['tensorboard']:
-        name, directory = set_directory(name=kwargs['name'],
-                                        type_net=kwargs['type_net'],
-                                        dof=kwargs['dof'])
         writer = SummaryWriter(directory)
     else:
         writer = None
@@ -310,7 +330,8 @@ def train_mlp(**kwargs):
         if torch.cuda.is_available():
             model = model.cuda()
 
-    optimizer = torch.optim.Adam(model.parameters(), lr=kwargs['lr'])
+    # optimizer = torch.optim.Adam(model.parameters(), lr=kwargs['lr'])
+    optimizer = VProp(model.parameters(), lr=kwargs['lr'])
 
     if kwargs['resume'] != '':
         kwargs['start_epoch'], best_prec1, total_steps, model, optimizer = resume_from_checkpoint(resume_path=kwargs['resume'],
@@ -464,7 +485,6 @@ def train_lenet(**kwargs):
                          print_freq=kwargs['print_freq'],
                          shape=[-1, 784],
                          writer=writer)
-
 
         is_best = prec1 > best_prec1
         state = {
