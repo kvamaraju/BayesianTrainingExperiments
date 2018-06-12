@@ -45,7 +45,7 @@ class HSConv2d(Module):
         print(self)
 
     def reset_parameters(self):
-        init.kaiming_normal(self.mean_w, mode='fan_in')
+        init.kaiming_normal_(self.mean_w, mode='fan_in')
         self.logvar_w.data.normal_(-9., 1e-4)
         self.qz_mean.data.normal_(math.log(math.exp(1) - 1), 1e-3)
         self.qz_logvar.data.normal_(math.log(0.1), 1e-4)
@@ -174,7 +174,7 @@ class FFGaussConv2d(Module):
         print(self)
 
     def reset_parameters(self):
-        init.kaiming_normal(self.mean_w, mode='fan_in')
+        init.kaiming_normal_(self.mean_w, mode='fan_in')
         self.logvar_w.data.normal_(-9., 1e-4)
         if self.use_bias:
             self.mean_bias.data.zero_()
@@ -269,7 +269,7 @@ class DropoutConv2d(ConvNd):
         print(self)
 
     def reset_parameters(self):
-        init.kaiming_normal(self.weight, mode='fan_in')
+        init.kaiming_normal_(self.weight, mode='fan_in')
         if self.bias is not None:
             self.bias.data.zero_()
 
@@ -351,7 +351,7 @@ class MAPConv2d(ConvNd):
         print(self)
 
     def reset_parameters(self):
-        init.kaiming_normal(self.weight, mode='fan_in')
+        init.kaiming_normal_(self.weight, mode='fan_in')
         if self.bias is not None:
             self.bias.data.zero_()
 

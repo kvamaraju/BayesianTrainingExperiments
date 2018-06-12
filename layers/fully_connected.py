@@ -30,7 +30,7 @@ class HSDense(Module):
         print(self)
 
     def reset_parameters(self):
-        init.kaiming_normal(self.mean_w, mode='fan_out')
+        init.kaiming_normal_(self.mean_w, mode='fan_out')
         self.logvar_w.data.normal_(-9., 1e-4)
 
         self.qz_mean.data.normal_(math.log(math.exp(1) - 1), 1e-3)
@@ -158,7 +158,7 @@ class FFGaussDense(Module):
         print(self)
 
     def reset_parameters(self):
-        init.kaiming_normal(self.mean_w, mode='fan_out')
+        init.kaiming_normal_(self.mean_w, mode='fan_out')
         self.logvar_w.data.normal_(-9., 1e-4)
 
         if self.use_bias:
@@ -261,7 +261,7 @@ class DropoutDense(Module):
         print(self)
 
     def reset_parameters(self):
-        init.kaiming_normal(self.weight, mode='fan_out')
+        init.kaiming_normal_(self.weight, mode='fan_out')
 
         if self.bias is not None:
             self.bias.data.normal_(0, 1e-2)
@@ -332,7 +332,7 @@ class MAPDense(Module):
         print(self)
 
     def reset_parameters(self):
-        init.kaiming_normal(self.weight, mode='fan_out')
+        init.kaiming_normal_(self.weight, mode='fan_out')
 
         if self.bias is not None:
             self.bias.data.normal_(0, 1e-2)
