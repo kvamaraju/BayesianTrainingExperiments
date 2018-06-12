@@ -30,7 +30,7 @@ class HSConv2d(Module):
         self.prior_std_z = prior_std_z
         self.use_bias = False
         self.dof = dof
-        self.mean_w = Parameter(torch.Tensor(out_channels, in_channels // groups, *self.kernel_size))
+        self.mean_w = Parameter(torch.Tensor( ))
         self.logvar_w = Parameter(torch.Tensor(out_channels, in_channels // groups, *self.kernel_size))
         self.qz_mean = Parameter(torch.Tensor(in_channels // groups))
         self.qz_logvar = Parameter(torch.Tensor(in_channels // groups))
