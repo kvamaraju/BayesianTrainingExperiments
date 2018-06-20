@@ -7,8 +7,10 @@ _LAYER_UIDS = {}
 prng = np.random.RandomState(1)
 torch.manual_seed(1)
 
-DATA_DIR = os.environ['DATA_DIR']
-
+try:
+    DATA_DIR = os.environ['DATA_DIR']
+except:
+    DATA_DIR = 'data/'
 
 def get_layer_uid(layer_name=''):
     """Helper function, assigns unique layer IDs
