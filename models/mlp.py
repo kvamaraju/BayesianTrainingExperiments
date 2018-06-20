@@ -65,6 +65,61 @@ class MLP(nn.Module):
             regularization = regularization.cuda()
         return regularization
 
+    def mmd(self,
+            scale_factor: float = 1.,
+            num_samples: int = 2):
+
+        def euclidean_kernel(x: torch.Tensor,
+                             y: torch.Tensor):
+            return torch.dist(input=x, other=y, p=2).pow(2)
+
+        def imq_kernel(x: torch.Tensor,
+                       y: torch.Tensor):
+            return torch.dist(input=x, other=y, p=2).pow(2).add(1).reciprocal()
+
+        def mmd_estimate(x: list,
+                         y: list):
+
+            kernel = imq_kernel
+
+            term1 = 0.
+            term2 = 0.
+
+            assert len(x) == len(y)
+            num_entries = len(x)
+
+            for i in range(num_entries):
+                for j in range(num_entries):
+                    if i != j:
+                        term1 += kernel(x[i], x[j]) + kernel(y[i], y[j])
+                    term2 += kernel(x[i], y[j])
+
+            term1 /= num_entries * (num_entries - 1)
+            term2 *= 2 / (num_entries * num_entries)
+
+            return term1 - term2
+
+        regularization = 0.
+
+        for layer in self.layers:
+            w_true = [layer.sample_W() for _ in range(num_samples)]
+            w_prior = [layer.sample_pW() for _ in range(num_samples)]
+
+            regularization += mmd_estimate(x=w_true,
+                                           y=w_prior)
+
+            if layer.use_bias:
+                b_true = [layer.sample_b() for _ in range(num_samples)]
+                b_prior = [layer.sample_pb() for _ in range(num_samples)]
+
+                regularization += mmd_estimate(x=b_true,
+                                               y=b_prior)
+        regularization *= scale_factor
+
+        if torch.cuda.is_available():
+            regularization = regularization.cuda()
+        return regularization
+
     def update_ema(self):
         self.steps_ema += 1
         for p, avg_p in zip(self.parameters(), self.avg_param):
