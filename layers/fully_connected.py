@@ -197,12 +197,18 @@ class FFGaussDense(Module):
         eps = Variable(eps)
         return eps
 
+    def sample_pW(self):
+        return self.floatTensor(self.in_features, self.out_features).normal_()
+
+    def sample_pb(self):
+        return self.floatTensor(self.out_features).normal_()
+
     def sample_W(self):
-        W = self.mean_w
+        w = self.mean_w
         if self.training:
             eps = self.get_eps(self.mean_w.size())
-            W = W.add(eps.mul(self.logvar_w.mul(0.5).exp_()))
-        return W
+            w = w.add(eps.mul(self.logvar_w.mul(0.5).exp_()))
+        return w
 
     def sample_b(self):
         b = self.mean_bias
@@ -215,7 +221,6 @@ class FFGaussDense(Module):
         mean_xin = input.mm(self.mean_w)
         if self.use_bias:
             mean_xin = mean_xin.add(self.mean_bias.view(1, self.out_features))
-
         return mean_xin
 
     def get_var_x(self, input):
@@ -228,11 +233,12 @@ class FFGaussDense(Module):
     def forward(self, input):
         batch_size = input.size(0)
         mean_xin = self.get_mean_x(input)
-        output = mean_xin
         if self.training:
             var_xin = self.get_var_x(input)
             eps = self.get_eps(self.floatTensor(batch_size, self.out_features))
-            output = output.add(var_xin.sqrt().mul(eps))
+            output = mean_xin.add(var_xin.sqrt().mul(eps))
+        else:
+            output = mean_xin
         return output
 
     def __repr__(self):

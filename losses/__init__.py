@@ -1,1 +1,1 @@
-from losses.losses import CrossEntropyLossWithAnnealing
+from losses.losses import CrossEntropyLossWithAnnealing, CrossEntropyLossWithMMD

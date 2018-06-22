@@ -45,3 +45,25 @@ class CrossEntropyLossWithAnnealing:
         if torch.cuda.is_available():
             total_loss = total_loss.cuda()
         return total_loss
+
+
+class CrossEntropyLossWithMMD:
+    def __init__(self,
+                 scale_factor: float = 1.,
+                 num_samples: int = 2):
+        self._loglikelihood = nn.CrossEntropyLoss()
+
+        if torch.cuda.is_available():
+            self._loglikelihood = self._loglikelihood.cuda()
+
+        self._scale_factor = scale_factor
+        self._num_samples = num_samples
+
+    def __call__(self, output, target_var, model):
+        loss = self._loglikelihood(output, target_var)
+
+        total_loss = loss + model.mmd(scale_factor=self._scale_factor,
+                                      num_samples=self._num_samples)
+        if torch.cuda.is_available():
+            total_loss = total_loss.cuda()
+        return total_loss

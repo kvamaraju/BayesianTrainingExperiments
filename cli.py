@@ -5,7 +5,7 @@ import time
 
 from utils import AverageMeter, accuracy
 from models import MLP, LeNet5, BaseCNN
-from losses import CrossEntropyLossWithAnnealing
+from losses import CrossEntropyLossWithAnnealing, CrossEntropyLossWithMMD
 from optimizers import VProp
 
 import torch
@@ -190,7 +190,7 @@ def train_single_epoch(train_loader: object,
 
         prec1 = accuracy(output.data, target, topk=(1,))[0]
         losses.update(loss.item(), input_.size(0))
-        top1.update(prec1.item(), input_.size(0))
+        top1.update(prec1, input_.size(0))
 
         if clip_var:
             for k, layer in enumerate(model.layers):
@@ -249,7 +249,7 @@ def validate(val_loader: object,
 
         prec1 = accuracy(output.data, target, topk=(1,))[0]
         losses.update(loss.item(), input_.size(0))
-        top1.update(prec1.item(), input_.size(0))
+        top1.update(prec1, input_.size(0))
 
         batch_time.update(time.time() - end)
         end = time.time()
@@ -289,7 +289,7 @@ def cli():
 @click.option('--multi_gpu', default=False)
 @click.option('--thres_std', type=list, default=[0.2, 0.5, 1.0])
 @click.option('--clip_var', default=False)
-@click.option('--type_net', default='hs')
+@click.option('--type_net', type=click.Choice(['hs', 'dropout', 'map', 'gauss']), default='gauss')
 @click.option('--anneal_kl', default=False)
 @click.option('--epzero', type=int, default=0)
 @click.option('--epmax', type=int, default=100)
@@ -300,6 +300,7 @@ def cli():
 @click.option('--beta_ema', type=float, default=0.)
 @click.option('--ldims', type=list, default=[1024, 1024])
 @click.option('--ep_anneal', type=int, default=10)
+@click.option('--save_at', type=list, default=[1, 10, 50, 100])
 def train_mlp(**kwargs):
     name, directory = set_directory(name=kwargs['name'],
                                     type_net=kwargs['type_net'],
@@ -330,8 +331,7 @@ def train_mlp(**kwargs):
         if torch.cuda.is_available():
             model = model.cuda()
 
-    # optimizer = torch.optim.Adam(model.parameters(), lr=kwargs['lr'])
-    optimizer = VProp(model.parameters(), lr=kwargs['lr'])
+    optimizer = torch.optim.Adam(model.parameters(), lr=kwargs['lr'])
 
     if kwargs['resume'] != '':
         kwargs['start_epoch'], best_prec1, total_steps, model, optimizer = resume_from_checkpoint(resume_path=kwargs['resume'],
@@ -343,14 +343,16 @@ def train_mlp(**kwargs):
 
     cudnn.benchmark = True
 
-    loss_function = CrossEntropyLossWithAnnealing(iter_per_epoch=iter_per_epoch,
-                                                  total_steps=total_steps,
-                                                  anneal_type=kwargs['anneal_type'],
-                                                  anneal_kl=kwargs['anneal_kl'],
-                                                  epzero=kwargs['epzero'],
-                                                  epmax=kwargs['epmax'],
-                                                  anneal_maxval=kwargs['anneal_maxval'],
-                                                  writer=writer)
+    # loss_function = CrossEntropyLossWithAnnealing(iter_per_epoch=iter_per_epoch,
+    #                                               total_steps=total_steps,
+    #                                               anneal_type=kwargs['anneal_type'],
+    #                                               anneal_kl=kwargs['anneal_kl'],
+    #                                               epzero=kwargs['epzero'],
+    #                                               epmax=kwargs['epmax'],
+    #                                               anneal_maxval=kwargs['anneal_maxval'],
+    #                                               writer=writer)
+
+    loss_function = CrossEntropyLossWithMMD(num_samples=2)
 
     for epoch in range(kwargs['start_epoch'], kwargs['epochs']):
         total_steps = train_single_epoch(train_loader=train_loader,
@@ -386,9 +388,15 @@ def train_mlp(**kwargs):
             state['avg_params'] = model.avg_param
             state['steps_ema'] = model.steps_ema
 
+        if epoch in kwargs['save_at']:
+            name = f'checkpoint_{epoch}.pth.tar'
+        else:
+            name = 'checkpoint.pth.tar'
+
         save_checkpoint(state=state,
                         is_best=is_best,
                         name=name)
+
     print('Best accuracy: ', best_prec1)
 
     if writer is not None:
@@ -417,6 +425,7 @@ def train_mlp(**kwargs):
 @click.option('--anneal_schedule', type=click.Choice(['linear']), default='linear')
 @click.option('--dof', type=float, default=1.)
 @click.option('--beta_ema', type=float, default=0.)
+@click.option('--save_at', type=list, default=[1, 10, 50, 100])
 def train_lenet(**kwargs):
     if kwargs['tensorboard']:
         name, directory = set_directory(name=kwargs['name'],
@@ -499,6 +508,11 @@ def train_lenet(**kwargs):
             state['avg_params'] = model.avg_param
             state['steps_ema'] = model.steps_ema
 
+        if epoch in kwargs['save_at']:
+            name = f'checkpoint_{epoch}.pth.tar'
+        else:
+            name = 'checkpoint.pth.tar'
+
         save_checkpoint(state=state,
                         is_best=is_best,
                         name=name)
@@ -530,6 +544,7 @@ def train_lenet(**kwargs):
 @click.option('--anneal_schedule', type=click.Choice(['linear']), default='linear')
 @click.option('--dof', type=float, default=1.)
 @click.option('--beta_ema', type=float, default=0.)
+@click.option('--save_at', type=list, default=[1, 10, 50, 100])
 def train_basecnn(**kwargs):
     if kwargs['tensorboard']:
         name, directory = set_directory(name=kwargs['name'],
@@ -611,6 +626,11 @@ def train_basecnn(**kwargs):
         if model.beta_ema > 0:
             state['avg_params'] = model.avg_param
             state['steps_ema'] = model.steps_ema
+
+        if epoch in kwargs['save_at']:
+            name = f'checkpoint_{epoch}.pth.tar'
+        else:
+            name = 'checkpoint.pth.tar'
 
         save_checkpoint(state=state,
                         is_best=is_best,
