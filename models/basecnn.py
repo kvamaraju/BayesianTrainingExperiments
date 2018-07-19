@@ -1,6 +1,6 @@
 import torch
 import torch.nn as nn
-from layers import FFGaussConv2d, HSConv2d, DropoutConv2d, MAPConv2d, FFGaussDense, HSDense, DropoutDense, MAPDense
+from layers import FFGaussConv2d, HSConv2d, DropoutConv2d, MAPConv2d, FFGaussDense, HSDense, DropoutDense, MAPDense, KernelDense, KernelConv2, KernelDenseBayesian, KernelBayesianConv2
 from utils import get_flat_fts
 from copy import deepcopy
 
@@ -33,6 +33,12 @@ class BaseCNN(nn.Module):
         elif type_net == 'map':
             self.conv_layer = MAPConv2d
             self.fc_layer = MAPDense
+        elif type_net == 'kernel':
+            self.conv_layer = KernelConv2
+            self.fc_layer = KernelDense
+        elif type_net == 'kernelbayesian':
+            self.conv_layer = KernelBayesianConv2
+            self.fc_layer = KernelDenseBayesian
         else:
             raise Exception()
 
@@ -82,8 +88,10 @@ class BaseCNN(nn.Module):
             aux_kls += - (1. / self.N) * aux_kl
         if type_anneal == 'kl':
             regularization = annealing * (aux_kls + logps + logqs)
-        else:
+        elif type_anneal == 'q':
             regularization = aux_kls + logps + annealing * logqs
+        else:
+            regularization = aux_kls + logps + logqs
         if torch.cuda.is_available():
             regularization = regularization.cuda()
         return regularization

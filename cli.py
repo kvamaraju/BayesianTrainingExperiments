@@ -182,7 +182,10 @@ def train_single_epoch(train_loader: object,
 
         else:
             output = model(input_var)
-            loss = criterion(output, target_var, model)
+            if isinstance(criterion, torch.nn.CrossEntropyLoss):
+                loss = criterion(output, target_var)
+            else:
+                loss = criterion(output, target_var, model)
 
             optimizer.zero_grad()
             loss.backward()
@@ -245,7 +248,10 @@ def validate(val_loader: object,
         target_var = torch.autograd.Variable(target)
 
         output = model(input_var)
-        loss = criterion(output, target_var, model)
+        if isinstance(criterion, torch.nn.CrossEntropyLoss):
+            loss = criterion(output, target_var)
+        else:
+            loss = criterion(output, target_var, model)
 
         prec1 = accuracy(output.data, target, topk=(1,))[0]
         losses.update(loss.item(), input_.size(0))
@@ -289,12 +295,12 @@ def cli():
 @click.option('--multi_gpu', default=False)
 @click.option('--thres_std', type=list, default=[0.2, 0.5, 1.0])
 @click.option('--clip_var', default=False)
-@click.option('--type_net', type=click.Choice(['hs', 'dropout', 'map', 'gauss']), default='gauss')
+@click.option('--type_net', type=click.Choice(['hs', 'dropout', 'map', 'gauss', 'kerneldense', 'kerneldensebayesian']), default='gauss')
 @click.option('--anneal_kl', default=False)
 @click.option('--epzero', type=int, default=0)
 @click.option('--epmax', type=int, default=100)
 @click.option('--anneal_maxval', type=float, default=1.)
-@click.option('--anneal_type', type=click.Choice(['kl', 'entr', 'weight', 'bits']), default='bits')
+@click.option('--anneal_type', type=click.Choice(['kl', 'q', 'none']), default='none')
 @click.option('--anneal_schedule', type=click.Choice(['linear']), default='linear')
 @click.option('--dof', type=float, default=1.)
 @click.option('--beta_ema', type=float, default=0.)
@@ -343,16 +349,19 @@ def train_mlp(**kwargs):
 
     cudnn.benchmark = True
 
-    # loss_function = CrossEntropyLossWithAnnealing(iter_per_epoch=iter_per_epoch,
-    #                                               total_steps=total_steps,
-    #                                               anneal_type=kwargs['anneal_type'],
-    #                                               anneal_kl=kwargs['anneal_kl'],
-    #                                               epzero=kwargs['epzero'],
-    #                                               epmax=kwargs['epmax'],
-    #                                               anneal_maxval=kwargs['anneal_maxval'],
-    #                                               writer=writer)
+    if kwargs['type_net'] == 'kerneldense':
+        loss_function = torch.nn.CrossEntropyLoss().cuda()
+    else:
+        loss_function = CrossEntropyLossWithAnnealing(iter_per_epoch=iter_per_epoch,
+                                                      total_steps=total_steps,
+                                                      anneal_type=kwargs['anneal_type'],
+                                                      anneal_kl=kwargs['anneal_kl'],
+                                                      epzero=kwargs['epzero'],
+                                                      epmax=kwargs['epmax'],
+                                                      anneal_maxval=kwargs['anneal_maxval'],
+                                                      writer=writer)
 
-    loss_function = CrossEntropyLossWithMMD(num_samples=2)
+    # loss_function = CrossEntropyLossWithMMD(num_samples=2)
 
     for epoch in range(kwargs['start_epoch'], kwargs['epochs']):
         total_steps = train_single_epoch(train_loader=train_loader,
@@ -416,12 +425,12 @@ def train_mlp(**kwargs):
 @click.option('--multi_gpu', default=False)
 @click.option('--thres_std', type=list, default=[0.2, 0.5, 1.0])
 @click.option('--clip_var', default=False)
-@click.option('--type_net', default='hs')
+@click.option('--type_net', type=click.Choice(['hs', 'gauss', 'dropout', 'map', 'kernel', 'kernelbayesian']), default='map')
 @click.option('--anneal_kl', default=False)
 @click.option('--epzero', type=int, default=0)
 @click.option('--epmax', type=int, default=100)
 @click.option('--anneal_maxval', type=float, default=1.)
-@click.option('--anneal_type', type=click.Choice(['kl', 'entr', 'weight', 'bits']), default='kl')
+@click.option('--anneal_type', type=click.Choice(['kl', 'q', 'none']), default='none')
 @click.option('--anneal_schedule', type=click.Choice(['linear']), default='linear')
 @click.option('--dof', type=float, default=1.)
 @click.option('--beta_ema', type=float, default=0.)
@@ -492,7 +501,6 @@ def train_lenet(**kwargs):
                          criterion=loss_function,
                          epoch=epoch,
                          print_freq=kwargs['print_freq'],
-                         shape=[-1, 784],
                          writer=writer)
 
         is_best = prec1 > best_prec1
@@ -530,17 +538,17 @@ def train_lenet(**kwargs):
 @click.option('--momentum', default=0.9, type=float)
 @click.option('--print_freq', default=100, type=int)
 @click.option('--resume', default='', type=str)
-@click.option('--name', default='Lenet5', type=str)
+@click.option('--name', default='Basecnn', type=str)
 @click.option('--tensorboard', type=bool, default=False)
 @click.option('--multi_gpu', default=False)
 @click.option('--thres_std', type=list, default=[0.2, 0.5, 1.0])
 @click.option('--clip_var', default=False)
-@click.option('--type_net', default='hs')
+@click.option('--type_net', type=click.Choice(['hs', 'gauss', 'dropout', 'map', 'kernel', 'kernelbayesian']), default='map')
 @click.option('--anneal_kl', default=False)
 @click.option('--epzero', type=int, default=0)
 @click.option('--epmax', type=int, default=100)
 @click.option('--anneal_maxval', type=float, default=1.)
-@click.option('--anneal_type', type=click.Choice(['kl', 'entr', 'weight', 'bits']), default='kl')
+@click.option('--anneal_type', type=click.Choice(['kl', 'q', 'none']), default='kl')
 @click.option('--anneal_schedule', type=click.Choice(['linear']), default='linear')
 @click.option('--dof', type=float, default=1.)
 @click.option('--beta_ema', type=float, default=0.)
@@ -611,7 +619,6 @@ def train_basecnn(**kwargs):
                          criterion=loss_function,
                          epoch=epoch,
                          print_freq=kwargs['print_freq'],
-                         shape=[-1, 784],
                          writer=writer)
 
         is_best = prec1 > best_prec1

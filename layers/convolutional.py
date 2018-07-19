@@ -1,5 +1,6 @@
 import torch
 import math
+import numpy as np
 import torch.nn.functional as F
 from torch.nn.modules import Module
 from torch.nn.parameter import Parameter
@@ -395,5 +396,284 @@ class MAPConv2d(ConvNd):
         return s.format(name=self.__class__.__name__, **self.__dict__)
 
 
+class KernelConv2(ConvNd):
+    def __init__(self,
+                 in_channels: int,
+                 out_channels: int,
+                 kernel_size: int,
+                 dim: int = 2,
+                 stride: int = 1,
+                 padding: int = 0,
+                 dilation: int = 1,
+                 groups: int = 1,
+                 use_bias: bool = True,
+                 weight_decay: float = 1.,
+                 **kwargs):
+        stride = pair(stride)
+        padding = pair(padding)
+        dilation = pair(dilation)
+        self.in_channels = in_channels
+        self.out_channels = out_channels
+        self.groups = groups
+        self.dim = dim
+        self.kernel_size = pair(kernel_size)
+        self.use_bias = use_bias
+        self.floatTensor = torch.FloatTensor if not torch.cuda.is_available() else torch.cuda.FloatTensor
+
+        super(KernelConv2, self).__init__(in_channels, out_channels, self.kernel_size, stride, padding, dilation, False,
+                                          pair(0), groups, use_bias)
+
+        self.columns = Parameter(self.floatTensor(self.in_channels * int(np.prod(self.kernel_size)), self.dim))
+        self.rows = Parameter(self.floatTensor(self.out_channels * int(np.prod(self.kernel_size)) // groups, self.dim))
+        self.alpha = Parameter(self.floatTensor(self.out_channels // self.groups, self.in_channels))
+
+        self.weight_decay = weight_decay
+
+        self.reset_parameters()
+        print(self)
+
+    def reset_parameters(self):
+        init.kaiming_normal_(self.weight, mode='fan_in')
+
+        if hasattr(self, 'rows'):
+            self.rows.data.normal_()
+        if hasattr(self, 'columns'):
+            self.columns.data.normal_()
+        if hasattr(self, 'alpha'):
+            self.alpha.data.normal_()
+        if self.use_bias:
+            self.bias.data.normal_(std=1e-5)
+
+    def _calc_rbf_weights(self,
+                          rows: torch.Tensor,
+                          columns: torch.Tensor,
+                          alpha: torch.Tensor) -> Parameter:
+        w = self.floatTensor(self.out_channels // self.groups, self.in_channels, np.prod(self.kernel_size))
+
+        for i in range(int(np.prod(self.kernel_size))):
+            row_start = i*(self.out_channels // self.groups)
+            row_stop = (i+1)*(self.out_channels // self.groups)
+            col_start = i*self.in_channels
+            col_stop = (i+1)*self.in_channels
+
+            x2 = rows[row_start:row_stop, :].pow(2).sum(dim=1).view(self.out_channels // self.groups, 1)
+            y2 = columns[col_start:col_stop, :].pow(2).sum(dim=1).view(1, self.in_channels)
+            xy = rows[row_start:row_stop, :].mm(columns[col_start:col_stop, :].t()).mul(-2.)
+
+            w[:, :, i] = x2.add(y2).add(xy).mul(-1).exp().mul(alpha)
+
+        return Parameter(w.view(self.out_channels // self.groups, self.in_channels, *self.kernel_size))
+
+    def eq_logpw(self, **kwargs):
+        logpw = - torch.sum(self.weight_decay * .5 * (self.weight.pow(2)))
+        logpb = 0
+        if self.use_bias:
+            logpb = - torch.sum(self.weight_decay * .5 * (self.bias.pow(2)))
+        return logpw + logpb
+
+    def eq_logqw(self):
+        return 0.
+
+    def kldiv_aux(self):
+        return 0.
+
+    def kldiv(self):
+        return self.kldiv_aux() + self.eq_logpw() - self.eq_logqw()
+
+    def forward(self,
+                input: torch.Tensor):
+        self.weight = self._calc_rbf_weights(rows=self.rows,
+                                             columns=self.columns,
+                                             alpha=self.alpha)
+        y = F.conv2d(input, self.weight, self.bias, self.stride, self.padding, self.dilation, self.groups)
+        return y
+
+    def __repr__(self):
+        s = ('{name}({in_channels}, {out_channels}, kernel_size={kernel_size} '
+             ', stride={stride}, weight_decay={weight_decay}, dim={dim}')
+        if self.padding != (0,) * len(self.padding):
+            s += ', padding={padding}'
+        if self.dilation != (1,) * len(self.dilation):
+            s += ', dilation={dilation}'
+        if self.output_padding != (0,) * len(self.output_padding):
+            s += ', output_padding={output_padding}'
+        if self.groups != 1:
+            s += ', groups={groups}'
+        if self.bias is None:
+            s += ', bias=False'
+        s += ')'
+        return s.format(name=self.__class__.__name__, **self.__dict__)
 
 
+class KernelBayesianConv2(ConvNd):
+    def __init__(self,
+                 in_channels: int,
+                 out_channels: int,
+                 kernel_size: int,
+                 dim: int = 2,
+                 stride: int = 1,
+                 padding: int = 0,
+                 dilation: int = 1,
+                 groups: int = 1,
+                 use_bias: bool = True,
+                 prior_std: float = 1.,
+                 bias_std: float = 1e-3,
+                 **kwargs):
+
+        stride = pair(stride)
+        padding = pair(padding)
+        dilation = pair(dilation)
+
+        self.floatTensor = torch.FloatTensor if not torch.cuda.is_available() else torch.cuda.FloatTensor
+
+        self.in_channels = in_channels
+        self.out_channels = out_channels
+        self.groups = groups
+        self.dim = dim
+        self.kernel_size = pair(kernel_size)
+        self.use_bias = use_bias
+        self.prior_std = prior_std
+        self.bias_std = bias_std
+
+        super(KernelBayesianConv2, self).__init__(in_channels, out_channels, self.kernel_size, stride, padding, dilation, False,
+                                                  pair(0), groups, use_bias)
+
+        self.columns_mean = Parameter(self.floatTensor(self.in_channels * int(np.prod(self.kernel_size)), self.dim))
+        self.columns_logvar = Parameter(self.floatTensor(self.in_channels * int(np.prod(self.kernel_size)), self.dim))
+
+        self.rows_mean = Parameter(self.floatTensor(self.out_channels * int(np.prod(self.kernel_size)) // groups, self.dim))
+        self.rows_logvar = Parameter(self.floatTensor(self.out_channels * int(np.prod(self.kernel_size)) // groups, self.dim))
+
+        self.alpha_mean = Parameter(self.floatTensor(self.out_channels // groups, self.in_channels))
+        self.alpha_logvar = Parameter(self.floatTensor(self.out_channels // groups, self.in_channels))
+
+        self.use_bias = use_bias
+        if self.use_bias:
+            self.bias_mean = Parameter(self.floatTensor(self.out_channels // self.groups))
+            self.bias_logvar = Parameter(self.floatTensor(self.out_channels // self.groups))
+
+        self.reset_parameters()
+        print(self)
+
+    def reset_parameters(self):
+        init.kaiming_normal_(self.weight, mode='fan_in')
+
+        if hasattr(self, 'columns_mean'):
+            self.columns_mean.data.normal_(std=self.prior_std)
+            self.columns_logvar.data.normal_(std=self.prior_std)
+
+        if hasattr(self, 'rows_mean'):
+            self.rows_mean.data.normal_(std=self.prior_std)
+            self.rows_logvar.data.normal_(std=self.prior_std)
+
+        if hasattr(self, 'alpha_mean'):
+            self.alpha_mean.data.normal_(std=self.prior_std)
+            self.alpha_logvar.data.normal_(std=self.prior_std)
+
+        if hasattr(self, 'bias_mean'):
+            self.bias_mean.data.normal_(std=self.bias_std)
+            self.bias_logvar.data.normal_(std=self.bias_std)
+
+    def _calc_rbf_weights(self,
+                          rows: torch.Tensor,
+                          columns: torch.Tensor,
+                          alpha: torch.Tensor) -> Parameter:
+        w = self.floatTensor(self.out_channels // self.groups, self.in_channels, np.prod(self.kernel_size))
+
+        for i in range(int(np.prod(self.kernel_size))):
+            row_start = i*(self.out_channels // self.groups)
+            row_stop = (i+1)*(self.out_channels // self.groups)
+            col_start = i*self.in_channels
+            col_stop = (i+1)*self.in_channels
+
+            x2 = rows[row_start:row_stop, :].pow(2).sum(dim=1).view(self.out_channels // self.groups, 1)
+            y2 = columns[col_start:col_stop, :].pow(2).sum(dim=1).view(1, self.in_channels)
+            xy = rows[row_start:row_stop, :].mm(columns[col_start:col_stop, :].t()).mul(-2.)
+
+            w[:, :, i] = x2.add(y2).add(xy).mul(-1).exp().mul(alpha)
+
+        return Parameter(w.view(self.out_channels // self.groups, self.in_channels, *self.kernel_size))
+
+    def _sample_eps(self,
+                    shape: tuple):
+        return self.floatTensor(shape).normal_()
+
+    def _eq_logpw(self,
+                  prior_std: float,
+                  mean: torch.Tensor,
+                  logvar: torch.Tensor) -> torch.Tensor:
+        logpw = logvar.exp().add(mean ** 2).div(prior_std ** 2).add(math.log(2.*math.pi*(prior_std ** 2))).mul(-0.5)
+        return torch.sum(logpw)
+
+    def _eq_logqw(self,
+                  logvar: torch.Tensor):
+        logqw = logvar.add(math.log(2.*math.pi)).add(1.).mul(-0.5)
+        return torch.sum(logqw)
+
+    def eq_logpw(self) -> torch.Tensor:
+        rows = self._eq_logpw(prior_std=self.prior_std, mean=self.rows_mean, logvar=self.rows_logvar)
+        columns = self._eq_logpw(prior_std=self.prior_std, mean=self.columns_mean, logvar=self.columns_logvar)
+        alpha = self._eq_logpw(prior_std=self.prior_std, mean=self.alpha_mean, logvar=self.alpha_logvar)
+        logpw = rows.add(columns).add(alpha)
+
+        if self.use_bias:
+            bias = self._eq_logpw(prior_std=self.prior_std, mean=self.bias_mean, logvar=self.bias_logvar)
+            logpw.add(bias)
+        return logpw
+
+    def eq_logqw(self):
+        rows = self._eq_logqw(logvar=self.rows_logvar)
+        columns = self._eq_logqw(logvar=self.columns_logvar)
+        alpha = self._eq_logqw(logvar=self.alpha_logvar)
+        logqw = rows.add(columns).add(alpha)
+
+        if self.use_bias:
+            bias = self._eq_logqw(logvar=self.bias_logvar)
+            logqw.add(bias)
+        return logqw
+
+    def kldiv(self):
+        return self.eq_logpw() - self.eq_logqw()
+
+    def kldiv_aux(self) -> float:
+        return 0.
+
+    def forward(self,
+                input: torch.Tensor):
+
+        rows = self.rows_mean
+        columns = self.columns_mean
+        alpha = self.alpha_mean
+
+        if self.training:
+            rows.add(self.rows_logvar.mul(0.5).exp().mul(self._sample_eps(rows.shape)))
+            columns.add(self.columns_logvar.mul(0.5).exp().mul(self._sample_eps(columns.shape)))
+            alpha.add(self.alpha_logvar.mul(0.5).exp().mul(self._sample_eps(alpha.shape)))
+
+        self.weight = self._calc_rbf_weights(rows=rows,
+                                             columns=columns,
+                                             alpha=alpha)
+
+        bias = self.bias_mean
+        if self.training:
+            bias.add(self.bias_logvar.mul(0.5).exp().mul(self._sample_eps(self.bias_logvar.shape)))
+        if self.use_bias:
+            self.bias = Parameter(bias)
+
+        return F.conv2d(input, self.weight, self.bias, self.stride, self.padding, self.dilation, self.groups)
+
+    def __repr__(self):
+        s = ('{name}({in_channels}, {out_channels}, kernel_size={kernel_size} '
+             ', stride={stride}, dim={dim}')
+        if self.padding != (0,) * len(self.padding):
+            s += ', padding={padding}'
+        if self.dilation != (1,) * len(self.dilation):
+            s += ', dilation={dilation}'
+        if self.output_padding != (0,) * len(self.output_padding):
+            s += ', output_padding={output_padding}'
+        if self.groups != 1:
+            s += ', groups={groups}'
+        if self.bias is None:
+            s += ', bias=False'
+        s += ')'
+        return s.format(name=self.__class__.__name__, **self.__dict__)
