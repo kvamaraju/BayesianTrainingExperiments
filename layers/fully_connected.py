@@ -373,3 +373,207 @@ class MAPDense(Module):
             + str(self.in_features) + ' -> ' \
             + str(self.out_features) + ')'
 
+
+class KernelDense(Module):
+    def __init__(self,
+                 in_features: int,
+                 out_features: int,
+                 dim: int = 2,
+                 use_bias=True,
+                 **kwargs):
+        super(KernelDense, self).__init__()
+        self.floatTensor = torch.FloatTensor if not torch.cuda.is_available() else torch.cuda.FloatTensor
+        self.in_features = in_features
+        self.out_features = out_features
+        self.dim = dim
+        self.columns = Parameter(self.floatTensor(in_features, dim))
+        self.rows = Parameter(self.floatTensor(out_features, dim))
+        self.alpha = Parameter(self.floatTensor(in_features))
+        self.use_bias = use_bias
+        if self.use_bias:
+            self.bias = Parameter(self.floatTensor(out_features))
+
+        self.reset_parameters()
+        print(self)
+
+    def reset_parameters(self):
+        self.rows.data.normal_()
+        self.columns.data.normal_()
+        self.alpha.data.normal_()
+        if self.use_bias:
+            self.bias.data.normal_(std=1e-5)
+
+    def eq_logpw(self, **kwargs) -> torch.Tensor:
+        logpw = - torch.sum(.5 * (self._calc_rbf_weights(rows=self.rows,
+                                                         columns=self.columns).pow(2)))
+        logpb = 0
+        if self.use_bias:
+            logpb = - torch.sum(.5 * (self._calc_rbf_weights(rows=self.rows,
+                                                             columns=self.columns).pow(2)))
+        return logpw + logpb
+
+    def eq_logqw(self):
+        return 0.
+
+    def kldiv_aux(self):
+        return 0.
+
+    def kldiv(self):
+        return self.kldiv_aux() + self.eq_logpw() - self.eq_logqw()
+
+    def _calc_rbf_weights(self,
+                          rows: torch.Tensor,
+                          columns: torch.Tensor) -> torch.Tensor:
+        x2 = rows.pow(2).sum(dim=1).view(1, self.out_features)
+        y2 = columns.pow(2).sum(dim=1).view(self.in_features, 1)
+        xy = columns.mm(rows.t()).mul(-2.)
+
+        return x2.add(y2).add(xy).mul(-1).exp()
+
+    def forward(self,
+                input: torch.Tensor):
+
+        w = self._calc_rbf_weights(rows=self.rows,
+                                   columns=self.columns)
+        y = input.mul(self.alpha).mm(w)
+
+        if self.use_bias:
+            return y.add(self.bias.view(1, self.out_features))
+        return y
+
+    def __repr__(self):
+        return self.__class__.__name__ + ' (' \
+            + str(self.in_features) + ' -> ' \
+            + str(self.out_features) + ', dim: ' \
+            + str(self.dim) + ')'
+
+
+class KernelDenseBayesian(Module):
+    def __init__(self,
+                 in_features: int,
+                 out_features: int,
+                 dim: int = 2,
+                 use_bias: bool = True,
+                 prior_std: float = 1.,
+                 bias_std: float = 1e-3,
+                 **kwargs):
+        super(KernelDenseBayesian, self).__init__()
+        self.floatTensor = torch.FloatTensor if not torch.cuda.is_available() else torch.cuda.FloatTensor
+        self.in_features = in_features
+        self.out_features = out_features
+        self.dim = dim
+        self.prior_std = prior_std
+        self.bias_std = bias_std
+
+        self.columns_mean = Parameter(self.floatTensor(self.in_features, self.dim))
+        self.columns_logvar = Parameter(self.floatTensor(self.in_features, self.dim))
+
+        self.rows_mean = Parameter(self.floatTensor(self.out_features, self.dim))
+        self.rows_logvar = Parameter(self.floatTensor(self.out_features, self.dim))
+
+        self.alpha_mean = Parameter(self.floatTensor(self.in_features))
+        self.alpha_logvar = Parameter(self.floatTensor(self.in_features))
+
+        self.use_bias = use_bias
+        if self.use_bias:
+            self.bias_mean = Parameter(self.floatTensor(self.out_features))
+            self.bias_logvar = Parameter(self.floatTensor(self.out_features))
+
+        self.reset_parameters()
+        print(self)
+
+    def reset_parameters(self):
+        self.columns_mean.data.normal_(std=self.prior_std)
+        self.columns_logvar.data.normal_(std=self.prior_std)
+
+        self.rows_mean.data.normal_(std=self.prior_std)
+        self.rows_logvar.data.normal_(std=self.prior_std)
+
+        self.alpha_mean.data.normal_(std=self.prior_std)
+        self.alpha_logvar.data.normal_(std=self.prior_std)
+
+        if self.use_bias:
+            self.bias_mean.data.normal_(std=self.bias_std)
+            self.bias_logvar.data.normal_(std=self.bias_std)
+
+    def _calc_rbf_weights(self,
+                          rows: torch.Tensor,
+                          columns: torch.Tensor):
+        x2 = rows.pow(2).sum(dim=1).view(1, self.out_features)
+        y2 = columns.pow(2).sum(dim=1).view(self.in_features, 1)
+        xy = columns.mm(rows.t()).mul(-2.)
+
+        return x2.add(y2).add(xy).mul(-1).exp()
+
+    def _sample_eps(self,
+                    shape: tuple):
+        return self.floatTensor(shape).normal_()
+
+    def _eq_logpw(self,
+                  prior_std: float,
+                  mean: torch.Tensor,
+                  logvar: torch.Tensor) -> torch.Tensor:
+        logpw = logvar.exp().add(mean ** 2).div(prior_std ** 2).add(math.log(2.*math.pi*(prior_std ** 2))).mul(-0.5)
+        return torch.sum(logpw)
+
+    def _eq_logqw(self,
+                  logvar: torch.Tensor):
+        logqw = logvar.add(math.log(2.*math.pi)).add(1.).mul(-0.5)
+        return torch.sum(logqw)
+
+    def eq_logpw(self) -> torch.Tensor:
+        rows = self._eq_logpw(prior_std=self.prior_std, mean=self.rows_mean, logvar=self.rows_logvar)
+        columns = self._eq_logpw(prior_std=self.prior_std, mean=self.columns_mean, logvar=self.columns_logvar)
+        alpha = self._eq_logpw(prior_std=self.prior_std, mean=self.alpha_mean, logvar=self.alpha_logvar)
+        logpw = rows.add(columns).add(alpha)
+
+        if self.use_bias:
+            bias = self._eq_logpw(prior_std=self.prior_std, mean=self.bias_mean, logvar=self.bias_logvar)
+            logpw.add(bias)
+        return logpw
+
+    def eq_logqw(self):
+        rows = self._eq_logqw(logvar=self.rows_logvar)
+        columns = self._eq_logqw(logvar=self.columns_logvar)
+        alpha = self._eq_logqw(logvar=self.alpha_logvar)
+        logqw = rows.add(columns).add(alpha)
+
+        if self.use_bias:
+            bias = self._eq_logqw(logvar=self.bias_logvar)
+            logqw.add(bias)
+        return logqw
+
+    def kldiv(self):
+        return self.eq_logpw() - self.eq_logqw()
+
+    def kldiv_aux(self) -> float:
+        return 0.
+
+    def forward(self,
+                input: torch.Tensor):
+
+        rows = self.rows_mean
+        columns = self.columns_mean
+        alpha = self.alpha_mean
+
+        if self.training:
+            rows.add(self.rows_logvar.mul(0.5).exp().mul(self._sample_eps(rows.shape)))
+            columns.add(self.columns_logvar.mul(0.5).exp().mul(self._sample_eps(columns.shape)))
+            alpha.add(self.alpha_logvar.mul(0.5).exp().mul(self._sample_eps(alpha.shape)))
+
+        w = self._calc_rbf_weights(rows=rows,
+                                   columns=columns)
+
+        y = input.mul(alpha).mm(w)
+
+        if self.use_bias:
+            y.add(self.bias_mean.view(1, self.out_features))
+            if self.training:
+                y.add(self.bias_logvar.mul(0.5).exp().mul(self._sample_eps(self.bias_logvar.shape)).view(1, self.out_features))
+        return y
+
+    def __repr__(self):
+        return self.__class__.__name__ + ' (' \
+            + str(self.in_features) + ' -> ' \
+            + str(self.out_features) + ', dim: ' \
+            + str(self.dim) + ')'

@@ -1,6 +1,6 @@
 import torch
 import torch.nn as nn
-from layers import FFGaussDense, HSDense, DropoutDense, MAPDense
+from layers import FFGaussDense, HSDense, DropoutDense, MAPDense, KernelDense, KernelDenseBayesian
 from copy import deepcopy
 
 
@@ -22,6 +22,10 @@ class MLP(nn.Module):
             self.fc_layer = MAPDense
         elif type_net == 'gauss':
             self.fc_layer = FFGaussDense
+        elif type_net == 'kerneldense':
+            self.fc_layer = KernelDense
+        elif type_net == 'kerneldensebayesian':
+            self.fc_layer = KernelDenseBayesian
         else:
             raise Exception()
 
@@ -59,8 +63,10 @@ class MLP(nn.Module):
             aux_kls += - (1. / self.N) * aux_kl
         if type_anneal == 'kl':
             regularization = annealing * (aux_kls + logps + logqs)
-        else:
+        elif type_anneal == 'q':
             regularization = aux_kls + logps + annealing * logqs
+        else:
+            regularization = aux_kls + logps + logqs
         if torch.cuda.is_available():
             regularization = regularization.cuda()
         return regularization
@@ -77,10 +83,14 @@ class MLP(nn.Module):
                        y: torch.Tensor):
             return torch.dist(input=x, other=y, p=2).pow(2).add(1).reciprocal()
 
+        def plummer_kernel(x: torch.Tensor,
+                           y: torch.Tensor):
+            return torch.dist(input=x, other=y, p=2).pow(2).add(1e-10).sqrt().reciprocal()
+
         def mmd_estimate(x: list,
                          y: list):
 
-            kernel = imq_kernel
+            kernel = plummer_kernel
 
             term1 = 0.
             term2 = 0.

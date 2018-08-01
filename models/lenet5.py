@@ -1,6 +1,6 @@
 import torch
 import torch.nn as nn
-from layers import FFGaussConv2d, HSConv2d, DropoutConv2d, MAPConv2d, FFGaussDense, HSDense, DropoutDense, MAPDense
+from layers import FFGaussConv2d, HSConv2d, DropoutConv2d, MAPConv2d, FFGaussDense, HSDense, DropoutDense, MAPDense, KernelConv2, KernelDense, KernelBayesianConv2, KernelDenseBayesian
 from utils import get_flat_fts
 from copy import deepcopy
 
@@ -28,11 +28,17 @@ class LeNet5(nn.Module):
         elif type_net == 'map':
             self.conv_layer = MAPConv2d
             self.fc_layer = MAPDense
+        elif type_net == 'kernel':
+            self.conv_layer = KernelConv2
+            self.fc_layer = KernelDense
+        elif type_net == 'kernelbayesian':
+            self.conv_layer = KernelBayesianConv2
+            self.fc_layer = KernelDenseBayesian
         else:
             raise Exception()
 
-        convs = [self.conv_layer(input_size[0], conv_dims[0], 5, droprate=0.5, dof=dof), nn.ReLU(), nn.MaxPool2d(2),
-                 self.conv_layer(conv_dims[0], conv_dims[1], 5, droprate=0.5, dof=dof), nn.ReLU(), nn.MaxPool2d(2)]
+        convs = [self.conv_layer(in_channels=input_size[0], out_channels=conv_dims[0], kernel_size=5, droprate=0.5, dof=dof), nn.ReLU(), nn.MaxPool2d(2),
+                 self.conv_layer(in_channels=conv_dims[0], out_channels=conv_dims[1], kernel_size=5, droprate=0.5, dof=dof), nn.ReLU(), nn.MaxPool2d(2)]
         self.convs = nn.Sequential(*convs)
         if torch.cuda.is_available():
             self.convs = self.convs.cuda()
@@ -68,8 +74,10 @@ class LeNet5(nn.Module):
             aux_kls += - (1. / self.N) * aux_kl
         if type_anneal == 'kl':
             regularization = annealing * (aux_kls + logps + logqs)
-        else:
+        elif type_anneal == 'q':
             regularization = aux_kls + logps + annealing * logqs
+        else:
+            regularization = aux_kls + logps + logqs
         if torch.cuda.is_available():
             regularization = regularization.cuda()
         return regularization
