@@ -40,8 +40,12 @@ class CrossEntropyLossWithAnnealing:
             if self._writer is not None:
                 self._writer.add_scalar('annealing', annealing, self._total_steps)
 
-        total_loss = loss + model.kl_div(annealing=annealing,
-                                         type_anneal=self._anneal_type)
+        if isinstance(model, torch.nn.DataParallel):
+            total_loss = loss + model.module.kl_div(annealing=annealing,
+                                                    type_anneal=self._anneal_type)
+        else:
+            total_loss = loss + model.kl_div(annealing=annealing,
+                                             type_anneal=self._anneal_type)
         if torch.cuda.is_available():
             total_loss = total_loss.cuda()
         return total_loss

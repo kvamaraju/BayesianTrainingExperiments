@@ -507,7 +507,7 @@ class KernelDenseBayesian(Module):
 
     def _sample_eps(self,
                     shape: tuple):
-        return self.floatTensor(shape).normal_()
+        return Variable(self.floatTensor(shape).normal_())
 
     def _eq_logpw(self,
                   prior_std: float,
@@ -577,3 +577,269 @@ class KernelDenseBayesian(Module):
             + str(self.in_features) + ' -> ' \
             + str(self.out_features) + ', dim: ' \
             + str(self.dim) + ')'
+
+
+class OrthogonalDense(Module):
+    def __init__(self,
+                 in_features: int,
+                 out_features: int,
+                 order: int = 8,
+                 use_bias: bool = True,
+                 add_diagonal: bool = True,
+                 **kwargs):
+        super(OrthogonalDense, self).__init__()
+        self.floatTensor = torch.FloatTensor if not torch.cuda.is_available() else torch.cuda.FloatTensor
+        self.device = torch.device('cpu') if not torch.cuda.is_available() else torch.device('cuda')
+        self.in_features = in_features
+        self.out_features = out_features
+        self.add_diagonal = add_diagonal
+
+        max_feature = max(self.in_features, self.out_features)
+
+        self.order = order or max_feature
+        assert 1 <= self.order <= max_feature
+
+        self.v = Parameter(self.floatTensor(self.order, max_feature))
+
+        if self.add_diagonal:
+            self.d = Parameter(self.floatTensor(min(self.in_features, self.out_features)))
+
+        self.use_bias = use_bias
+        if self.use_bias:
+            self.bias = Parameter(self.floatTensor(out_features))
+
+        self.reset_parameters()
+        print(self)
+
+    def reset_parameters(self):
+        self.v.data.normal_()
+        if self.add_diagonal:
+            self.d.data.normal_()
+
+        if self.use_bias:
+            self.bias.data.normal_(std=1e-2)
+
+    def eq_logpw(self, **kwargs) -> torch.Tensor:
+        logpw = 0.
+        logpb = 0.
+        if self.use_bias:
+            logpb = - torch.sum(.5 * self.bias.pow(2))
+        return logpw + logpb
+
+    def eq_logqw(self):
+        return 0.
+
+    def kldiv_aux(self):
+        return 0.
+
+    def kldiv(self):
+        return self.kldiv_aux() + self.eq_logpw() - self.eq_logqw()
+
+    def _chain_multiply(self,
+                        t: torch.Tensor) -> torch.Tensor:
+        p = t[0]
+        for i in range(1, t.shape[0]):
+            p = p.mm(t[i])
+        return p
+
+    def _calc_householder_tensor(self,
+                                 t: torch.Tensor) -> torch.Tensor:
+        norm = t.norm(p=2, dim=1)
+        t = t.div(norm.unsqueeze(1))
+        h = torch.einsum('ab,ac->abc', (t, t))
+        return torch.eye(n=t.shape[1], device=self.device).expand_as(h) - h.mul(2.)
+
+    def _calc_weights(self,
+                      v: torch.Tensor,
+                      d: torch.Tensor) -> torch.Tensor:
+
+        u = self._chain_multiply(self._calc_householder_tensor(v))
+
+        if self.out_features <= self.in_features:
+            D = torch.eye(n=self.in_features, m=self.out_features, device=self.device).mm(torch.diag(d))
+            W = u.mm(D)
+        else:
+            D = torch.diag(d).mm(torch.eye(n=self.in_features, m=self.out_features, device=self.device))
+            W = D.mm(u)
+        return W
+
+    def forward(self,
+                input: torch.Tensor):
+
+        if self.add_diagonal:
+            w = self._calc_weights(v=self.v,
+                                   d=self.d)
+        else:
+            d = torch.ones(min(self.in_features, self.out_features), device=self.device)
+            w = self._calc_weights(v=self.v,
+                                   d=d)
+
+        y = input.mm(w)
+
+        if self.use_bias:
+            return y.add(self.bias.view(1, self.out_features))
+        return y
+
+    def __repr__(self):
+        return self.__class__.__name__ + ' (' \
+            + str(self.in_features) + ' -> ' \
+            + str(self.out_features) + ', order: ' \
+            + str(self.order) + ', add_diagonal: ' \
+            + str(self.add_diagonal) + ')'
+
+
+class OrthogonalBayesianDense(Module):
+    def __init__(self,
+                 in_features: int,
+                 out_features: int,
+                 order: int = 4,
+                 use_bias: bool = True,
+                 add_diagonal: bool = True,
+                 prior_std: float = 1.,
+                 bias_std: float = 1e-2,
+                 **kwargs):
+        super(OrthogonalBayesianDense, self).__init__()
+        self.floatTensor = torch.FloatTensor if not torch.cuda.is_available() else torch.cuda.FloatTensor
+        self.device = torch.device('cpu') if not torch.cuda.is_available() else torch.device('cuda')
+        self.in_features = in_features
+        self.out_features = out_features
+        self.add_diagonal = add_diagonal
+        self.prior_std = prior_std
+        self.bias_std = bias_std
+
+        max_feature = max(self.in_features, self.out_features)
+
+        self.order = order or max_feature
+        assert 1 <= self.order <= max_feature
+
+        self.v_mean = Parameter(self.floatTensor(self.order, max_feature))
+        self.v_logvar = Parameter(self.floatTensor(self.order, max_feature))
+
+        if self.add_diagonal:
+            self.d_mean = Parameter(self.floatTensor(min(self.in_features, self.out_features)))
+            self.d_logvar = Parameter(self.floatTensor(min(self.in_features, self.out_features)))
+
+        self.use_bias = use_bias
+        if self.use_bias:
+            self.bias_mean = Parameter(self.floatTensor(out_features))
+            self.bias_logvar = Parameter(self.floatTensor(out_features))
+
+        self.reset_parameters()
+        print(self)
+
+    def reset_parameters(self):
+        self.v_mean.data.normal_(std=self.prior_std)
+        self.v_logvar.data.normal_(mean=-5., std=self.prior_std)
+
+        if self.add_diagonal:
+            self.d_mean.data.normal_(std=self.prior_std)
+            self.d_logvar.data.normal_(mean=-5., std=self.prior_std)
+
+        if self.use_bias:
+            self.bias_mean.data.normal_(std=self.bias_std)
+            self.bias_logvar.data.normal_(mean=-5., std=self.bias_std)
+
+    def _sample_eps(self,
+                    shape: tuple):
+        return Variable(self.floatTensor(shape).normal_())
+
+    def _eq_logpw(self,
+                  prior_mean: float,
+                  prior_std: float,
+                  mean: torch.Tensor,
+                  logvar: torch.Tensor) -> torch.Tensor:
+        logpw = logvar.exp().add((prior_mean - mean) ** 2).div(prior_std ** 2).add(math.log(2.*math.pi*(prior_std ** 2))).mul(-0.5)
+        return torch.sum(logpw)
+
+    def _eq_logqw(self,
+                  logvar: torch.Tensor):
+        logqw = logvar.add(math.log(2.*math.pi)).add(1.).mul(-0.5)
+        return torch.sum(logqw)
+
+    def eq_logpw(self) -> torch.Tensor:
+        v = self._eq_logpw(prior_mean=0., prior_std=self.prior_std, mean=self.v_mean, logvar=self.v_logvar)
+
+        if self.add_diagonal:
+            d = self._eq_logpw(prior_mean=0., prior_std=self.prior_std, mean=self.d_mean, logvar=self.d_logvar)
+            logpw = v.add(d)
+        else:
+            logpw = v
+
+        if self.use_bias:
+            bias = self._eq_logpw(prior_mean=0., prior_std=self.prior_std, mean=self.bias_mean, logvar=self.bias_logvar)
+            logpw.add(bias)
+        return logpw
+
+    def eq_logqw(self):
+        v = self._eq_logqw(logvar=self.v_logvar)
+
+        if self.add_diagonal:
+            d = self._eq_logqw(logvar=self.d_logvar)
+            logqw = v.add(d)
+        else:
+            logqw = v
+
+        if self.use_bias:
+            bias = self._eq_logqw(logvar=self.bias_logvar)
+            logqw.add(bias)
+        return logqw
+
+    def kldiv(self):
+        return self.eq_logpw() - self.eq_logqw()
+
+    def kldiv_aux(self) -> float:
+        return 0.
+
+    def _chain_multiply(self,
+                        t: torch.Tensor) -> torch.Tensor:
+        p = t[0]
+        for i in range(1, t.shape[0]):
+            p = p.mm(t[i])
+        return p
+
+    def _calc_householder_tensor(self,
+                                 t: torch.Tensor) -> torch.Tensor:
+        norm = t.norm(p=2, dim=1)
+        t = t.div(norm.unsqueeze(1))
+        h = torch.einsum('ab,ac->abc', (t, t))
+        return torch.eye(n=t.shape[1], device=self.device).expand_as(h) - h.mul(2.)
+
+    def _calc_weights(self,
+                      v: torch.Tensor,
+                      d: torch.Tensor) -> torch.Tensor:
+
+        u = self._chain_multiply(self._calc_householder_tensor(v))
+
+        if self.out_features <= self.in_features:
+            D = torch.eye(n=self.in_features, m=self.out_features, device=self.device).mm(torch.diag(d))
+            W = u.mm(D)
+        else:
+            D = torch.diag(d).mm(torch.eye(n=self.in_features, m=self.out_features, device=self.device))
+            W = D.mm(u)
+        return W
+
+    def forward(self,
+                input: torch.Tensor):
+
+        v = self.v_mean.add(self.v_logvar.mul(0.5).exp().mul(self._sample_eps(self.v_logvar.shape)))
+
+        if self.add_diagonal:
+            d = self.d_mean.add(self.d_logvar.mul(0.5).exp().mul(self._sample_eps(self.d_logvar.shape)))
+        else:
+            d = torch.ones(min(self.in_features, self.out_features), device=self.device)
+
+        w = self._calc_weights(v=v,
+                               d=d)
+        y = input.mm(w)
+
+        if self.use_bias:
+            bias = self.bias_mean.add(self.bias_logvar.mul(0.5).exp().mul(self._sample_eps(self.bias_logvar.shape)))
+            return y.add(bias.view(1, self.out_features))
+        return y
+
+    def __repr__(self):
+        return self.__class__.__name__ + ' (' \
+            + str(self.in_features) + ' -> ' \
+            + str(self.out_features) + ', order: ' \
+            + str(self.order) + ', add_diagonal: ' \
+            + str(self.add_diagonal) + ')'

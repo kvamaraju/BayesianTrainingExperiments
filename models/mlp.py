@@ -1,6 +1,6 @@
 import torch
 import torch.nn as nn
-from layers import FFGaussDense, HSDense, DropoutDense, MAPDense, KernelDense, KernelDenseBayesian
+from layers import FFGaussDense, HSDense, DropoutDense, MAPDense, KernelDense, KernelDenseBayesian, OrthogonalDense, OrthogonalBayesianDense
 from copy import deepcopy
 
 
@@ -22,10 +22,14 @@ class MLP(nn.Module):
             self.fc_layer = MAPDense
         elif type_net == 'gauss':
             self.fc_layer = FFGaussDense
-        elif type_net == 'kerneldense':
+        elif type_net == 'kernel':
             self.fc_layer = KernelDense
-        elif type_net == 'kerneldensebayesian':
+        elif type_net == 'kernelbayes':
             self.fc_layer = KernelDenseBayesian
+        elif type_net == 'orth':
+            self.fc_layer = OrthogonalDense
+        elif type_net == 'orthbayes':
+            self.fc_layer = OrthogonalBayesianDense
         else:
             raise Exception()
 
