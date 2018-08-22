@@ -1,6 +1,6 @@
 import torch
 import torch.nn as nn
-from layers import FFGaussConv2d, HSConv2d, DropoutConv2d, MAPConv2d, FFGaussDense, HSDense, DropoutDense, MAPDense, KernelDense, KernelConv2, KernelDenseBayesian, KernelBayesianConv2
+from layers import FFGaussConv2d, HSConv2d, DropoutConv2d, MAPConv2d, FFGaussDense, HSDense, DropoutDense, MAPDense, KernelDense, KernelConv2, KernelDenseBayesian, KernelBayesianConv2, OrthogonalDense, OrthogonalConv2d, OrthogonalBayesianDense, OrthogonalBayesianConv2d
 from utils import get_flat_fts
 from copy import deepcopy
 
@@ -36,9 +36,15 @@ class BaseCNN(nn.Module):
         elif type_net == 'kernel':
             self.conv_layer = KernelConv2
             self.fc_layer = KernelDense
-        elif type_net == 'kernelbayesian':
+        elif type_net == 'kernelbayes':
             self.conv_layer = KernelBayesianConv2
             self.fc_layer = KernelDenseBayesian
+        elif type_net == 'orth':
+            self.conv_layer = OrthogonalConv2d
+            self.fc_layer = OrthogonalDense
+        elif type_net == 'orthbayes':
+            self.conv_layer = OrthogonalBayesianConv2d
+            self.fc_layer = OrthogonalBayesianDense
         else:
             raise Exception()
 

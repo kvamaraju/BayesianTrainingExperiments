@@ -181,15 +181,19 @@ def train_single_epoch(train_loader: object,
             loss = criterion(output, target_var, model)
 
         else:
+            optimizer.zero_grad()
             output = model(input_var)
             if isinstance(criterion, torch.nn.CrossEntropyLoss):
                 loss = criterion(output, target_var)
             else:
                 loss = criterion(output, target_var, model)
-
-            optimizer.zero_grad()
             loss.backward()
-            optimizer.step()
+            if isinstance(optimizer, torch.optim.LBFGS):
+                def closure():
+                    return loss
+                optimizer.step(closure)
+            else:
+                optimizer.step()
 
         prec1 = accuracy(output.data, target, topk=(1,))[0]
         losses.update(loss.item(), input_.size(0))
@@ -199,8 +203,12 @@ def train_single_epoch(train_loader: object,
             for k, layer in enumerate(model.layers):
                 layer.constrain_parameters(thres_std=thres_stds[k])
 
-        if model.beta_ema > 0.:
-            model.update_ema()
+        if isinstance(model, torch.nn.DataParallel):
+            if model.module.beta_ema > 0.:
+                model.module.update_ema()
+        else:
+            if model.beta_ema > 0.:
+                model.update_ema()
 
         batch_time.update(time.time() - end)
         end = time.time()
@@ -231,9 +239,15 @@ def validate(val_loader: object,
     top1 = AverageMeter()
 
     model.eval()
-    if model.beta_ema > 0:
-        old_params = model.get_params()
-        model.load_ema_params()
+
+    if isinstance(model, torch.nn.DataParallel):
+        if model.module.beta_ema > 0:
+            old_params = model.module.get_params()
+            model.module.load_ema_params()
+    else:
+        if model.beta_ema > 0:
+            old_params = model.get_params()
+            model.load_ema_params()
 
     end = time.time()
     for i, (input_, target) in enumerate(val_loader):
@@ -267,8 +281,12 @@ def validate(val_loader: object,
                   f'Prec@1 {top1.val:.3f} ({top1.avg:.3f})')
 
     print(f' * Prec@1 {top1.avg:.3f}')
-    if model.beta_ema > 0:
-        model.load_params(old_params)
+    if isinstance(model, torch.nn.DataParallel):
+        if model.module.beta_ema > 0:
+            model.module.load_params(old_params)
+    else:
+        if model.beta_ema > 0:
+            model.load_params(old_params)
 
     if writer is not None:
         writer.add_scalar('val/loss', losses.avg, epoch)
@@ -295,7 +313,8 @@ def cli():
 @click.option('--multi_gpu', default=False)
 @click.option('--thres_std', type=list, default=[0.2, 0.5, 1.0])
 @click.option('--clip_var', default=False)
-@click.option('--type_net', type=click.Choice(['hs', 'dropout', 'map', 'gauss', 'kerneldense', 'kerneldensebayesian']), default='gauss')
+@click.option('--type_net', type=click.Choice(['hs', 'dropout', 'map', 'gauss', 'kernel', 'kernelbayes', 'orth', 'orthbayes']), default='gauss')
+@click.option('--optim', type=click.Choice(['adam', 'agsd', 'lbfgs']), default='adam')
 @click.option('--anneal_kl', default=False)
 @click.option('--epzero', type=int, default=0)
 @click.option('--epmax', type=int, default=100)
@@ -307,6 +326,7 @@ def cli():
 @click.option('--ldims', type=list, default=[1024, 1024])
 @click.option('--ep_anneal', type=int, default=10)
 @click.option('--save_at', type=list, default=[1, 10, 50, 100])
+@click.option('--device', type=int, default=0)
 def train_mlp(**kwargs):
     name, directory = set_directory(name=kwargs['name'],
                                     type_net=kwargs['type_net'],
@@ -329,6 +349,9 @@ def train_mlp(**kwargs):
     num_parameters = sum([p.data.nelement() for p in model.parameters()])
     print(f'Number of model parameters: {num_parameters}')
 
+    if torch.cuda.is_available():
+        torch.cuda.set_device(kwargs['device'])
+
     # for training on multiple GPUs.
     # Use CUDA_VISIBLE_DEVICES=0,1 to specify which GPUs to use
     if kwargs['multi_gpu']:
@@ -337,7 +360,12 @@ def train_mlp(**kwargs):
         if torch.cuda.is_available():
             model = model.cuda()
 
-    optimizer = torch.optim.Adam(model.parameters(), lr=kwargs['lr'])
+    if kwargs['optim'] == 'adam':
+        optimizer = torch.optim.Adam(model.parameters(), lr=kwargs['lr'])
+    elif kwargs['optim'] == 'agsd':
+        optimizer = torch.optim.ASGD(model.parameters(), lr=kwargs['lr'])
+    else:
+        optimizer = torch.optim.LBFGS(model.parameters(), lr=kwargs['lr'])
 
     if kwargs['resume'] != '':
         kwargs['start_epoch'], best_prec1, total_steps, model, optimizer = resume_from_checkpoint(resume_path=kwargs['resume'],
@@ -385,17 +413,32 @@ def train_mlp(**kwargs):
                          writer=writer)
 
         is_best = prec1 > best_prec1
-        state = {
-            'epoch': epoch + 1,
-            'state_dict': model.state_dict(),
-            'best_prec1': max(prec1, best_prec1),
-            'beta_ema': model.beta_ema,
-            'optimizer': optimizer.state_dict(),
-            'total_steps': total_steps
-        }
-        if model.beta_ema > 0:
-            state['avg_params'] = model.avg_param
-            state['steps_ema'] = model.steps_ema
+        if is_best:
+            best_prec1 = prec1
+        if isinstance(model, torch.nn.DataParallel):
+            state = {
+                'epoch': epoch + 1,
+                'state_dict': model.state_dict(),
+                'best_prec1': max(prec1, best_prec1),
+                'beta_ema': model.module.beta_ema,
+                'optimizer': optimizer.state_dict(),
+                'total_steps': total_steps
+            }
+            if model.module.beta_ema > 0:
+                state['avg_params'] = model.module.avg_param
+                state['steps_ema'] = model.module.steps_ema
+        else:
+            state = {
+                'epoch': epoch + 1,
+                'state_dict': model.state_dict(),
+                'best_prec1': max(prec1, best_prec1),
+                'beta_ema': model.beta_ema,
+                'optimizer': optimizer.state_dict(),
+                'total_steps': total_steps
+            }
+            if model.beta_ema > 0:
+                state['avg_params'] = model.avg_param
+                state['steps_ema'] = model.steps_ema
 
         if epoch in kwargs['save_at']:
             name = f'checkpoint_{epoch}.pth.tar'
@@ -425,7 +468,8 @@ def train_mlp(**kwargs):
 @click.option('--multi_gpu', default=False)
 @click.option('--thres_std', type=list, default=[0.2, 0.5, 1.0])
 @click.option('--clip_var', default=False)
-@click.option('--type_net', type=click.Choice(['hs', 'gauss', 'dropout', 'map', 'kernel', 'kernelbayesian']), default='map')
+@click.option('--type_net', type=click.Choice(['hs', 'gauss', 'dropout', 'map', 'kernel', 'kernelbayes', 'orth', 'orthbayes']), default='map')
+@click.option('--optim', type=click.Choice(['adam', 'agsd', 'lbfgs']), default='adam')
 @click.option('--anneal_kl', default=False)
 @click.option('--epzero', type=int, default=0)
 @click.option('--epmax', type=int, default=100)
@@ -435,6 +479,7 @@ def train_mlp(**kwargs):
 @click.option('--dof', type=float, default=1.)
 @click.option('--beta_ema', type=float, default=0.)
 @click.option('--save_at', type=list, default=[1, 10, 50, 100])
+@click.option('--device', type=int, default=0)
 def train_lenet(**kwargs):
     if kwargs['tensorboard']:
         name, directory = set_directory(name=kwargs['name'],
@@ -455,6 +500,9 @@ def train_lenet(**kwargs):
     num_parameters = sum([p.data.nelement() for p in model.parameters()])
     print(f'Number of model parameters: {num_parameters}')
 
+    if torch.cuda.is_available():
+        torch.cuda.set_device(kwargs['device'])
+
     # for training on multiple GPUs.
     # Use CUDA_VISIBLE_DEVICES=0,1 to specify which GPUs to use
     if kwargs['multi_gpu']:
@@ -463,7 +511,12 @@ def train_lenet(**kwargs):
         if torch.cuda.is_available():
             model = model.cuda()
 
-    optimizer = torch.optim.Adam(model.parameters(), lr=kwargs['lr'])
+    if kwargs['optim'] == 'adam':
+        optimizer = torch.optim.Adam(model.parameters(), lr=kwargs['lr'])
+    elif kwargs['optim'] == 'agsd':
+        optimizer = torch.optim.ASGD(model.parameters(), lr=kwargs['lr'])
+    else:
+        optimizer = torch.optim.LBFGS(model.parameters(), lr=kwargs['lr'])
 
     if kwargs['resume'] != '':
         kwargs['start_epoch'], best_prec1, total_steps, model, optimizer = resume_from_checkpoint(resume_path=kwargs['resume'],
@@ -504,17 +557,32 @@ def train_lenet(**kwargs):
                          writer=writer)
 
         is_best = prec1 > best_prec1
-        state = {
-            'epoch': epoch + 1,
-            'state_dict': model.state_dict(),
-            'best_prec1': max(prec1, best_prec1),
-            'beta_ema': model.beta_ema,
-            'optimizer': optimizer.state_dict(),
-            'total_steps': total_steps
-        }
-        if model.beta_ema > 0:
-            state['avg_params'] = model.avg_param
-            state['steps_ema'] = model.steps_ema
+        if is_best:
+            best_prec1 = prec1
+        if isinstance(model, torch.nn.DataParallel):
+            state = {
+                'epoch': epoch + 1,
+                'state_dict': model.state_dict(),
+                'best_prec1': max(prec1, best_prec1),
+                'beta_ema': model.module.beta_ema,
+                'optimizer': optimizer.state_dict(),
+                'total_steps': total_steps
+            }
+            if model.module.beta_ema > 0:
+                state['avg_params'] = model.module.avg_param
+                state['steps_ema'] = model.module.steps_ema
+        else:
+            state = {
+                'epoch': epoch + 1,
+                'state_dict': model.state_dict(),
+                'best_prec1': max(prec1, best_prec1),
+                'beta_ema': model.beta_ema,
+                'optimizer': optimizer.state_dict(),
+                'total_steps': total_steps
+            }
+            if model.beta_ema > 0:
+                state['avg_params'] = model.avg_param
+                state['steps_ema'] = model.steps_ema
 
         if epoch in kwargs['save_at']:
             name = f'checkpoint_{epoch}.pth.tar'
@@ -534,7 +602,7 @@ def train_lenet(**kwargs):
 @click.option('--epochs', default=300, type=int)
 @click.option('--start_epoch', default=0, type=int)
 @click.option('--batch_size', default=100, type=int)
-@click.option('--lr', default=0.001, type=float)
+@click.option('--lr', default=0.01, type=float)
 @click.option('--momentum', default=0.9, type=float)
 @click.option('--print_freq', default=100, type=int)
 @click.option('--resume', default='', type=str)
@@ -543,7 +611,8 @@ def train_lenet(**kwargs):
 @click.option('--multi_gpu', default=False)
 @click.option('--thres_std', type=list, default=[0.2, 0.5, 1.0])
 @click.option('--clip_var', default=False)
-@click.option('--type_net', type=click.Choice(['hs', 'gauss', 'dropout', 'map', 'kernel', 'kernelbayesian']), default='map')
+@click.option('--type_net', type=click.Choice(['hs', 'gauss', 'dropout', 'map', 'kernel', 'kernelbayes', 'orth', 'orthbayes']), default='map')
+@click.option('--optim', type=click.Choice(['adam', 'agsd', 'lbfgs']), default='adam')
 @click.option('--anneal_kl', default=False)
 @click.option('--epzero', type=int, default=0)
 @click.option('--epmax', type=int, default=100)
@@ -553,6 +622,7 @@ def train_lenet(**kwargs):
 @click.option('--dof', type=float, default=1.)
 @click.option('--beta_ema', type=float, default=0.)
 @click.option('--save_at', type=list, default=[1, 10, 50, 100])
+@click.option('--device', type=int, default=0)
 def train_basecnn(**kwargs):
     if kwargs['tensorboard']:
         name, directory = set_directory(name=kwargs['name'],
@@ -573,6 +643,9 @@ def train_basecnn(**kwargs):
     num_parameters = sum([p.data.nelement() for p in model.parameters()])
     print(f'Number of model parameters: {num_parameters}')
 
+    if torch.cuda.is_available():
+        torch.cuda.set_device(kwargs['device'])
+
     # for training on multiple GPUs.
     # Use CUDA_VISIBLE_DEVICES=0,1 to specify which GPUs to use
     if kwargs['multi_gpu']:
@@ -581,7 +654,12 @@ def train_basecnn(**kwargs):
         if torch.cuda.is_available():
             model = model.cuda()
 
-    optimizer = torch.optim.Adam(model.parameters(), lr=kwargs['lr'])
+    if kwargs['optim'] == 'adam':
+        optimizer = torch.optim.Adam(model.parameters(), lr=kwargs['lr'])
+    elif kwargs['optim'] == 'agsd':
+        optimizer = torch.optim.ASGD(model.parameters(), lr=kwargs['lr'])
+    else:
+        optimizer = torch.optim.LBFGS(model.parameters(), lr=kwargs['lr'])
 
     if kwargs['resume'] != '':
         kwargs['start_epoch'], best_prec1, total_steps, model, optimizer = resume_from_checkpoint(resume_path=kwargs['resume'],
@@ -622,17 +700,32 @@ def train_basecnn(**kwargs):
                          writer=writer)
 
         is_best = prec1 > best_prec1
-        state = {
-            'epoch': epoch + 1,
-            'state_dict': model.state_dict(),
-            'best_prec1': max(prec1, best_prec1),
-            'beta_ema': model.beta_ema,
-            'optimizer': optimizer.state_dict(),
-            'total_steps': total_steps
-        }
-        if model.beta_ema > 0:
-            state['avg_params'] = model.avg_param
-            state['steps_ema'] = model.steps_ema
+        if is_best:
+            best_prec1 = prec1
+        if isinstance(model, torch.nn.DataParallel):
+            state = {
+                'epoch': epoch + 1,
+                'state_dict': model.state_dict(),
+                'best_prec1': max(prec1, best_prec1),
+                'beta_ema': model.module.beta_ema,
+                'optimizer': optimizer.state_dict(),
+                'total_steps': total_steps
+            }
+            if model.module.beta_ema > 0:
+                state['avg_params'] = model.module.avg_param
+                state['steps_ema'] = model.module.steps_ema
+        else:
+            state = {
+                'epoch': epoch + 1,
+                'state_dict': model.state_dict(),
+                'best_prec1': max(prec1, best_prec1),
+                'beta_ema': model.beta_ema,
+                'optimizer': optimizer.state_dict(),
+                'total_steps': total_steps
+            }
+            if model.beta_ema > 0:
+                state['avg_params'] = model.avg_param
+                state['steps_ema'] = model.steps_ema
 
         if epoch in kwargs['save_at']:
             name = f'checkpoint_{epoch}.pth.tar'

@@ -462,7 +462,7 @@ class KernelConv2(ConvNd):
 
             w[:, :, i] = x2.add(y2).add(xy).mul(-1).exp().mul(alpha)
 
-        return Parameter(w.view(self.out_channels // self.groups, self.in_channels, *self.kernel_size))
+        return w.view(self.out_channels // self.groups, self.in_channels, *self.kernel_size)
 
     def eq_logpw(self, **kwargs):
         logpw = - torch.sum(self.weight_decay * .5 * (self.weight.pow(2)))
@@ -482,10 +482,10 @@ class KernelConv2(ConvNd):
 
     def forward(self,
                 input: torch.Tensor):
-        self.weight = self._calc_rbf_weights(rows=self.rows,
-                                             columns=self.columns,
-                                             alpha=self.alpha)
-        y = F.conv2d(input, self.weight, self.bias, self.stride, self.padding, self.dilation, self.groups)
+        weight = self._calc_rbf_weights(rows=self.rows,
+                                        columns=self.columns,
+                                        alpha=self.alpha)
+        y = F.conv2d(input, weight, self.bias, self.stride, self.padding, self.dilation, self.groups)
         return y
 
     def __repr__(self):
@@ -592,11 +592,11 @@ class KernelBayesianConv2(ConvNd):
 
             w[:, :, i] = x2.add(y2).add(xy).mul(-1).exp().mul(alpha)
 
-        return Parameter(w.view(self.out_channels // self.groups, self.in_channels, *self.kernel_size))
+        return w.view(self.out_channels // self.groups, self.in_channels, *self.kernel_size)
 
     def _sample_eps(self,
                     shape: tuple):
-        return self.floatTensor(shape).normal_()
+        return Variable(self.floatTensor(shape).normal_())
 
     def _eq_logpw(self,
                   prior_std: float,
@@ -646,21 +646,22 @@ class KernelBayesianConv2(ConvNd):
         alpha = self.alpha_mean
 
         if self.training:
-            rows.add(self.rows_logvar.mul(0.5).exp().mul(self._sample_eps(rows.shape)))
-            columns.add(self.columns_logvar.mul(0.5).exp().mul(self._sample_eps(columns.shape)))
-            alpha.add(self.alpha_logvar.mul(0.5).exp().mul(self._sample_eps(alpha.shape)))
+            rows = self.rows_mean.add(self.rows_logvar.mul(0.5).exp().mul(self._sample_eps(rows.shape)))
+            columns = self.columns_mean.add(self.columns_logvar.mul(0.5).exp().mul(self._sample_eps(columns.shape)))
+            alpha = self.alpha_mean.add(self.alpha_logvar.mul(0.5).exp().mul(self._sample_eps(alpha.shape)))
 
-        self.weight = self._calc_rbf_weights(rows=rows,
-                                             columns=columns,
-                                             alpha=alpha)
+        weight = self._calc_rbf_weights(rows=rows,
+                                        columns=columns,
+                                        alpha=alpha)
 
         bias = self.bias_mean
         if self.training:
-            bias.add(self.bias_logvar.mul(0.5).exp().mul(self._sample_eps(self.bias_logvar.shape)))
-        if self.use_bias:
-            self.bias = Parameter(bias)
+            bias = self.bias_mean.add(self.bias_logvar.mul(0.5).exp().mul(self._sample_eps(self.bias_logvar.shape)))
 
-        return F.conv2d(input, self.weight, self.bias, self.stride, self.padding, self.dilation, self.groups)
+        if not self.use_bias:
+            bias = None
+
+        return F.conv2d(input, weight, bias, self.stride, self.padding, self.dilation, self.groups)
 
     def __repr__(self):
         s = ('{name}({in_channels}, {out_channels}, kernel_size={kernel_size} '
@@ -675,5 +676,474 @@ class KernelBayesianConv2(ConvNd):
             s += ', groups={groups}'
         if self.bias is None:
             s += ', bias=False'
+        s += ')'
+        return s.format(name=self.__class__.__name__, **self.__dict__)
+
+
+class OrthogonalConv2d(ConvNd):
+    def __init__(self,
+                 in_channels,
+                 out_channels,
+                 kernel_size,
+                 stride=1,
+                 padding=0,
+                 dilation=1,
+                 groups=1,
+                 use_bias=True,
+                 simple=True,
+                 add_diagonal=True,
+                 weight_decay=1., **kwargs):
+        kernel_size = pair(kernel_size)
+        stride = pair(stride)
+        padding = pair(padding)
+        dilation = pair(dilation)
+        self.weight_decay = weight_decay
+        self.floatTensor = torch.FloatTensor if not torch.cuda.is_available() else torch.cuda.FloatTensor
+        self.device = torch.device('cpu') if not torch.cuda.is_available() else torch.device('cuda')
+        self.simple = simple
+        self.add_diagonal = add_diagonal
+        super(OrthogonalConv2d, self).__init__(in_channels, out_channels, kernel_size, stride, padding, dilation, False,
+                                               pair(0), groups, use_bias)
+        self.in_channels = in_channels
+        self.out_channels = out_channels
+        self.kernel_size = kernel_size[0]
+
+        if simple:
+            self.r = Parameter(self.floatTensor(self.kernel_size*self.kernel_size, self.out_channels))
+        else:
+            self.r = Parameter(self.floatTensor(2, self.out_channels))
+            self.t = Parameter(self.floatTensor(2 * (self.kernel_size - 1), self.out_channels))
+
+        if self.add_diagonal:
+            self.d = Parameter(self.floatTensor(self.kernel_size, self.kernel_size, min(self.in_channels, self.out_channels)))
+
+        self.reset_parameters()
+        print(self)
+
+    def reset_parameters(self):
+        if self.bias is not None:
+            self.bias.data.normal_(std=1e-2)
+
+        if hasattr(self, 'r'):
+            torch.nn.init.orthogonal_(self.r)
+        if hasattr(self, 't'):
+            torch.nn.init.orthogonal_(self.t)
+
+        if hasattr(self, 'd'):
+            self.d.data.normal_()
+
+    def constrain_parameters(self, thres_std=1.):
+        pass
+
+    def eq_logpw(self, **kwargs):
+        logpw = 0.
+        logpb = - torch.sum(.5 * self.bias.pow(2))
+        return logpw + logpb
+
+    def eq_logqw(self):
+        return 0.
+
+    def kldiv_aux(self):
+        return 0.
+
+    def kldiv(self):
+        return self.kldiv_aux() + self.eq_logpw() - self.eq_logqw()
+
+    def _chain_multiply(self,
+                        t: torch.Tensor) -> torch.Tensor:
+        p = t[0]
+        for i in range(1, t.shape[0]):
+            p = p.mm(t[i])
+        return p
+
+    def _calc_householder_tensor(self,
+                                 t: torch.Tensor) -> torch.Tensor:
+        norm = t.norm(p=2, dim=1)
+        t = t.div(norm.unsqueeze(1))
+        h = torch.einsum('ab,ac->abc', (t, t))
+        return torch.eye(n=t.shape[1], device=self.device).expand_as(h) - h.mul(2.)
+
+    def _calc_block_orthogonal_tensor(self,
+                                      size: int,
+                                      t: torch.Tensor):
+        h = torch.zeros(size, 2, 2, t.shape[1], t.shape[2], device=self.device)
+
+        for i in range(size):
+            p = t[2 * i]
+            q = t[2 * i + 1]
+            pq = p.mm(q)
+            h[i, 0, 0] = pq
+            h[i, 0, 1] = p.sub(pq)
+            h[i, 1, 0] = q.sub(pq)
+            h[i, 1, 1] = torch.eye(p.shape[0], device=self.device).add(pq).sub(p).sub(q)
+        return h
+
+    def _matrix_conv(self,
+                     s: torch.Tensor,
+                     t: torch.Tensor) -> torch.Tensor:
+        assert s[0, 0].shape[0] == t[0, 0].shape[0]
+
+        n = s[0, 0].shape[0]
+        k = int(np.sqrt(s.shape[0] * s.shape[1]))
+        l = int(np.sqrt(t.shape[0] * t.shape[1]))
+        size = k + l - 1
+
+        result = torch.zeros(size, size, n, n, device=self.device)
+
+        for i in range(size):
+            for j in range(size):
+                for index1 in range(min(k, i + 1)):
+                    for index2 in range(min(k, j + 1)):
+                        if (i - index1) < l and (j - index2) < l:
+                            result[i, j] += torch.mm(s[index1, index2],
+                                                     t[i - index1, j - index2])
+        return result
+
+    def _orthogonal_kernel(self,
+                           r: torch.Tensor,
+                           t: torch.Tensor,
+                           d: torch.Tensor = None,
+                           transpose: bool = False) -> torch.Tensor:
+        assert self.in_channels <= self.out_channels
+
+        if self.in_channels <= self.out_channels:
+            d = torch.einsum('abc,cd->abcd',
+                             (d, torch.eye(n=self.in_channels, m=self.out_channels, device=self.device)))
+        else:
+            d = torch.einsum('ab, cda->cdab',
+                             (torch.eye(n=self.in_channels, m=self.out_channels, device=self.device), d))
+
+        if self.simple:
+            q = self._calc_householder_tensor(r).view(self.kernel_size,
+                                                      self.kernel_size,
+                                                      self.out_channels,
+                                                      self.out_channels)
+        else:
+            r = self._chain_multiply(self._calc_householder_tensor(r))
+
+            if self.kernel_size == 1:
+                return torch.unsqueeze(torch.unsqueeze(r, 0), 0)
+
+            t = self._calc_block_orthogonal_tensor(size=self.kernel_size - 1,
+                                                   t=self._calc_householder_tensor(t))
+
+            s = t[0]
+            for i in range(1, self.kernel_size - 1):
+                s = self._matrix_conv(s=s,
+                                      t=t[i])
+
+            q = torch.einsum('ab,debc->deac', (r, s))
+
+        q = torch.einsum('abcd,abde->abce', (d, q))
+
+        if transpose:
+            q = q.permute(2, 3, 1, 0)
+        else:
+            q = q.permute(3, 2, 1, 0)
+
+        return q
+
+    def forward(self, input_):
+        if self.add_diagonal:
+            d = self.d
+        else:
+            d = torch.ones(self.kernel_size, self.kernel_size, min(self.in_channels, self.out_channels),
+                           device=self.device)
+
+        if self.simple:
+            weight = self._orthogonal_kernel(r=self.r,
+                                             t=None,
+                                             d=d)
+        else:
+            weight = self._orthogonal_kernel(r=self.r,
+                                             t=self.t,
+                                             d=d)
+        return F.conv2d(input_, weight, self.bias, self.stride, self.padding, self.dilation, self.groups)
+
+    def __repr__(self):
+        s = ('{name}({in_channels}, {out_channels}, kernel_size={kernel_size} '
+             ', stride={stride}, weight_decay={weight_decay}')
+        if self.padding != (0,) * len(self.padding):
+            s += ', padding={padding}'
+        if self.dilation != (1,) * len(self.dilation):
+            s += ', dilation={dilation}'
+        if self.output_padding != (0,) * len(self.output_padding):
+            s += ', output_padding={output_padding}'
+        if self.groups != 1:
+            s += ', groups={groups}'
+        if self.bias is None:
+            s += ', bias=False'
+        s += ', simple={simple}'
+        s += ', add_diagonal={add_diagonal}'
+        s += ')'
+        return s.format(name=self.__class__.__name__, **self.__dict__)
+
+
+class OrthogonalBayesianConv2d(ConvNd):
+    def __init__(self,
+                 in_channels,
+                 out_channels,
+                 kernel_size,
+                 stride=1,
+                 padding=0,
+                 dilation=1,
+                 groups=1,
+                 use_bias=True,
+                 simple=False,
+                 add_diagonal=True,
+                 weight_decay=1.,
+                 prior_std = 1.,
+                 bias_std = 1e-2,
+                 **kwargs):
+        kernel_size = pair(kernel_size)
+        stride = pair(stride)
+        padding = pair(padding)
+        dilation = pair(dilation)
+        self.weight_decay = weight_decay
+        self.floatTensor = torch.FloatTensor if not torch.cuda.is_available() else torch.cuda.FloatTensor
+        self.device = torch.device('cpu') if not torch.cuda.is_available() else torch.device('cuda')
+        self.simple = simple
+        self.add_diagonal = add_diagonal
+        super(OrthogonalBayesianConv2d, self).__init__(in_channels, out_channels, kernel_size, stride, padding, dilation,
+                                                       False, pair(0), groups, use_bias)
+
+        self.in_channels = in_channels
+        self.out_channels = out_channels // groups
+        self.kernel_size = kernel_size[0]
+
+        self.prior_std = prior_std
+        self.bias_std = bias_std
+
+        if simple:
+            self.r_mean = Parameter(self.floatTensor(self.kernel_size * self.kernel_size, self.out_channels))
+            self.r_logvar = Parameter(self.floatTensor(self.kernel_size * self.kernel_size, self.out_channels))
+        else:
+            self.r_mean = Parameter(self.floatTensor(2, self.out_channels))
+            self.r_logvar = Parameter(self.floatTensor(2, self.out_channels))
+            self.t_mean = Parameter(self.floatTensor(2 * (self.kernel_size - 1), self.out_channels))
+            self.t_logvar = Parameter(self.floatTensor(2 * (self.kernel_size - 1), self.out_channels))
+
+        if self.add_diagonal:
+            self.d_mean = Parameter(self.floatTensor(self.kernel_size, self.kernel_size, min(self.in_channels, self.out_channels)))
+            self.d_logvar = Parameter(self.floatTensor(self.kernel_size, self.kernel_size, min(self.in_channels, self.out_channels)))
+
+        self.use_bias = use_bias
+        if self.use_bias:
+            self.bias_mean = Parameter(self.floatTensor(self.out_channels // self.groups))
+            self.bias_logvar = Parameter(self.floatTensor(self.out_channels // self.groups))
+
+        self.reset_parameters()
+        print(self)
+
+    def reset_parameters(self):
+        if hasattr(self, 'r_mean'):
+            torch.nn.init.orthogonal_(self.r_mean)
+            self.r_logvar.data.normal_(mean=-5., std=self.prior_std)
+
+        if hasattr(self, 't_mean'):
+            torch.nn.init.orthogonal_(self.t_mean)
+            self.t_logvar.data.normal_(mean=-5., std=self.prior_std)
+
+        if hasattr(self, 'd_mean'):
+            self.d_mean.data.normal_(std=self.prior_std)
+            self.d_logvar.data.normal_(mean=-5, std=self.prior_std)
+
+        if hasattr(self, 'bias_mean'):
+            self.bias_mean.data.normal_(std=self.bias_std)
+            self.bias_logvar.data.normal_(mean=-5., std=self.bias_std)
+
+    def constrain_parameters(self, thres_std=1.):
+        pass
+
+    def _sample_eps(self,
+                    shape: tuple):
+        return Variable(self.floatTensor(shape).normal_())
+
+    def _eq_logpw(self,
+                  prior_mean: float,
+                  prior_std: float,
+                  mean: torch.Tensor,
+                  logvar: torch.Tensor) -> torch.Tensor:
+        logpw = logvar.exp().add((prior_mean - mean) ** 2).div(prior_std ** 2).add(math.log(2.*math.pi*(prior_std ** 2))).mul(-0.5)
+        return torch.sum(logpw)
+
+    def _eq_logqw(self,
+                  logvar: torch.Tensor):
+        logqw = logvar.add(math.log(2.*math.pi)).add(1.).mul(-0.5)
+        return torch.sum(logqw)
+
+    def eq_logpw(self) -> torch.Tensor:
+        r = self._eq_logpw(prior_mean=0., prior_std=self.prior_std, mean=self.r_mean, logvar=self.r_logvar)
+
+        if self.add_diagonal:
+            d = self._eq_logpw(prior_mean=0., prior_std=self.prior_std, mean=self.d_mean, logvar=self.d_logvar)
+            logpw = r.add(d)
+        else:
+            logpw = r
+
+        if not self.simple:
+            t = self._eq_logpw(prior_mean=0., prior_std=self.prior_std, mean=self.t_mean, logvar=self.t_logvar)
+            logpw = logpw.add(t)
+
+        if self.use_bias:
+            bias = self._eq_logpw(prior_mean=0., prior_std=self.prior_std, mean=self.bias_mean, logvar=self.bias_logvar)
+            logpw.add(bias)
+
+        return logpw
+
+    def eq_logqw(self):
+        r = self._eq_logqw(logvar=self.r_logvar)
+
+        if self.add_diagonal:
+            d = self._eq_logqw(logvar=self.d_logvar)
+            logqw = r.add(d)
+        else:
+            logqw = r
+
+        if not self.simple:
+            t = self._eq_logqw(logvar=self.t_logvar)
+            logqw.add(t)
+
+        if self.use_bias:
+            bias = self._eq_logqw(logvar=self.bias_logvar)
+            logqw.add(bias)
+        return logqw
+
+    def kldiv(self):
+        return self.eq_logpw() - self.eq_logqw()
+
+    def kldiv_aux(self) -> float:
+        return 0.
+
+    def _chain_multiply(self,
+                        t: torch.Tensor) -> torch.Tensor:
+        p = t[0]
+        for i in range(1, t.shape[0]):
+            p = p.mm(t[i])
+        return p
+
+    def _calc_householder_tensor(self,
+                                 t: torch.Tensor) -> torch.Tensor:
+        norm = t.norm(p=2, dim=1)
+        t = t.div(norm.unsqueeze(1))
+        h = torch.einsum('ab,ac->abc', (t, t))
+        return torch.eye(n=t.shape[1], device=self.device).expand_as(h) - h.mul(2.)
+
+    def _calc_block_orthogonal_tensor(self,
+                                      size: int,
+                                      t: torch.Tensor):
+        h = torch.zeros(size, 2, 2, t.shape[1], t.shape[2], device=self.device)
+
+        for i in range(size):
+            p = t[2 * i]
+            q = t[2 * i + 1]
+            pq = p.mm(q)
+            h[i, 0, 0] = pq
+            h[i, 0, 1] = p.sub(pq)
+            h[i, 1, 0] = q.sub(pq)
+            h[i, 1, 1] = torch.eye(p.shape[0], device=self.device).add(pq).sub(p).sub(q)
+        return h
+
+    def _matrix_conv(self,
+                     s: torch.Tensor,
+                     t: torch.Tensor) -> torch.Tensor:
+        assert s[0, 0].shape[0] == t[0, 0].shape[0]
+
+        n = s[0, 0].shape[0]
+        k = int(np.sqrt(s.shape[0] * s.shape[1]))
+        l = int(np.sqrt(t.shape[0] * t.shape[1]))
+        size = k + l - 1
+
+        result = torch.zeros(size, size, n, n, device=self.device)
+
+        for i in range(size):
+            for j in range(size):
+                for index1 in range(min(k, i + 1)):
+                    for index2 in range(min(k, j + 1)):
+                        if (i - index1) < l and (j - index2) < l:
+                            result[i, j] += torch.mm(s[index1, index2],
+                                                     t[i - index1, j - index2])
+        return result
+
+    def _orthogonal_kernel(self,
+                           r: torch.Tensor,
+                           t: torch.Tensor,
+                           d: torch.Tensor = None,
+                           transpose: bool = False) -> torch.Tensor:
+        assert self.in_channels <= self.out_channels
+
+        if self.in_channels <= self.out_channels:
+            d = torch.einsum('abc,cd->abcd',
+                             (d, torch.eye(n=self.in_channels, m=self.out_channels, device=self.device)))
+        else:
+            d = torch.einsum('ab, cda->cdab',
+                             (torch.eye(n=self.in_channels, m=self.out_channels, device=self.device), d))
+
+        if self.simple:
+            q = self._calc_householder_tensor(r).view(self.kernel_size,
+                                                      self.kernel_size,
+                                                      self.out_channels,
+                                                      self.out_channels)
+        else:
+            r = self._chain_multiply(self._calc_householder_tensor(r))
+
+            if self.kernel_size == 1:
+                return torch.unsqueeze(torch.unsqueeze(r, 0), 0)
+
+            t = self._calc_block_orthogonal_tensor(size=self.kernel_size - 1,
+                                                   t=self._calc_householder_tensor(t))
+
+            s = t[0]
+            for i in range(1, self.kernel_size - 1):
+                s = self._matrix_conv(s=s,
+                                      t=t[i])
+
+            q = torch.einsum('ab,debc->deac', (r, s))
+
+        q = torch.einsum('abcd,abde->abce', (d, q))
+
+        if transpose:
+            q = q.permute(2, 3, 1, 0)
+        else:
+            q = q.permute(3, 2, 1, 0)
+
+        return q
+
+    def forward(self, input_):
+        r = self.r_mean.add(self.r_logvar.mul(0.5).exp().mul(self._sample_eps(self.r_logvar.shape)))
+
+        if self.add_diagonal:
+            d = self.d_mean.add(self.d_logvar.mul(0.5).exp().mul(self._sample_eps(self.d_logvar.shape)))
+        else:
+            d = torch.ones(self.kernel_size, self.kernel_size, min(self.in_channels, self.out_channels),
+                           device=self.device)
+
+        if self.simple:
+            weight = self._orthogonal_kernel(r=r, t=None, d=d)
+        else:
+            t = self.t_mean.add(self.t_logvar.mul(0.5).exp().mul(self._sample_eps(self.t_logvar.shape)))
+            weight = self._orthogonal_kernel(r=r, t=t, d=d)
+
+        bias = self.bias_mean.add(self.bias_logvar.mul(0.5).exp().mul(self._sample_eps(self.bias_logvar.shape)))
+        if not self.use_bias:
+            bias = None
+
+        return F.conv2d(input_, weight, bias, self.stride, self.padding, self.dilation, self.groups)
+
+    def __repr__(self):
+        s = ('{name}({in_channels}, {out_channels}, kernel_size={kernel_size} '
+             ', stride={stride}, weight_decay={weight_decay}')
+        if self.padding != (0,) * len(self.padding):
+            s += ', padding={padding}'
+        if self.dilation != (1,) * len(self.dilation):
+            s += ', dilation={dilation}'
+        if self.output_padding != (0,) * len(self.output_padding):
+            s += ', output_padding={output_padding}'
+        if self.groups != 1:
+            s += ', groups={groups}'
+        if self.bias is None:
+            s += ', bias=False'
+        s += ', simple={simple}'
+        s += ', add_diagonal={add_diagonal}'
         s += ')'
         return s.format(name=self.__class__.__name__, **self.__dict__)
