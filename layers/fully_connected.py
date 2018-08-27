@@ -692,7 +692,7 @@ class OrthogonalBayesianDense(Module):
     def __init__(self,
                  in_features: int,
                  out_features: int,
-                 order: int = 4,
+                 order: int = 8,
                  use_bias: bool = True,
                  add_diagonal: bool = True,
                  prior_std: float = 1.,

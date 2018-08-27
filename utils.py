@@ -2,6 +2,8 @@ import torch
 import numpy as np
 import os
 
+from optimizers import COCOBBackprop, FTML
+
 _LAYER_UIDS = {}
 
 prng = np.random.RandomState(1)
@@ -125,3 +127,26 @@ def log_sum_exp(vec):
     max_score = vec[0, argmax(vec)]
     max_score_broadcast = max_score.view(1, -1).expand(1, vec.size()[1])
     return max_score + torch.log(torch.sum(torch.exp(vec - max_score_broadcast)))
+
+
+def construct_optimizer(optimizer: str,
+                        model: torch.nn.Module,
+                        lr: float) -> torch.optim.Optimizer:
+    if optimizer == 'adam':
+        return torch.optim.Adam(model.parameters(), lr=lr, amsgrad=True)
+    elif optimizer == 'adagrad':
+        return torch.optim.Adagrad(model.parameters(), lr=lr)
+    elif optimizer == 'adamax':
+        return torch.optim.Adamax(model.parameters(), lr=lr)
+    elif optimizer == 'rmsprop':
+        return torch.optim.RMSprop(model.parameters(), lr=lr)
+    elif optimizer == 'rprop':
+        return torch.optim.Rprop(model.parameters(), lr=lr)
+    elif optimizer == 'sgd':
+        return torch.optim.SGD(model.parameters(), lr=lr)
+    elif optimizer == 'cocob':
+        return COCOBBackprop(model.parameters())
+    elif optimizer == 'ftml':
+        return FTML(model.parameters(), lr=lr)
+    else:
+        return torch.optim.Adadelta(model.parameters())

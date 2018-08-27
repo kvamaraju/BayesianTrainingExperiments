@@ -889,7 +889,7 @@ class OrthogonalBayesianConv2d(ConvNd):
                  dilation=1,
                  groups=1,
                  use_bias=True,
-                 simple=False,
+                 simple=True,
                  add_diagonal=True,
                  weight_decay=1.,
                  prior_std = 1.,
