@@ -3,7 +3,7 @@ import os
 import shutil
 import time
 
-from utils import AverageMeter, accuracy
+from utils import AverageMeter, accuracy, construct_optimizer
 from models import MLP, LeNet5, BaseCNN
 from losses import CrossEntropyLossWithAnnealing, CrossEntropyLossWithMMD
 from optimizers import VProp
@@ -30,7 +30,7 @@ def set_directory(name: str,
 def load_cifar10(batch_size: int,
                  num_workers: int = 4,
                  pin_memory: bool = torch.cuda.is_available(),
-                 augment: bool = False) -> (object, object, int):
+                 augment: bool = True) -> (object, object, int):
     if augment:
         transform_train = transforms.Compose([
             transforms.RandomCrop(32, padding=4),
@@ -314,7 +314,11 @@ def cli():
 @click.option('--thres_std', type=list, default=[0.2, 0.5, 1.0])
 @click.option('--clip_var', default=False)
 @click.option('--type_net', type=click.Choice(['hs', 'dropout', 'map', 'gauss', 'kernel', 'kernelbayes', 'orth', 'orthbayes']), default='gauss')
-@click.option('--optim', type=click.Choice(['adam', 'agsd', 'lbfgs']), default='adam')
+@click.option('--optim', type=click.Choice(['adam', 'adadelta', 'adagrad', 'adamax', 'rmsprop', 'rprop', 'sgd', 'cocob', 'ftml']), default='adadelta')
+@click.option('--restart_optim', type=click.Choice(['adam', 'adadelta', 'adagrad', 'adamax', 'rmsprop', 'rprop', 'sgd', 'cocob', 'ftml']), default='adadelta')
+@click.option('--restart_lr', default=0.001, type=float)
+@click.option('--restart', type=bool, default=False)
+@click.option('--restart_interval', type=int, default=100)
 @click.option('--anneal_kl', default=False)
 @click.option('--epzero', type=int, default=0)
 @click.option('--epmax', type=int, default=100)
@@ -360,12 +364,9 @@ def train_mlp(**kwargs):
         if torch.cuda.is_available():
             model = model.cuda()
 
-    if kwargs['optim'] == 'adam':
-        optimizer = torch.optim.Adam(model.parameters(), lr=kwargs['lr'])
-    elif kwargs['optim'] == 'agsd':
-        optimizer = torch.optim.ASGD(model.parameters(), lr=kwargs['lr'])
-    else:
-        optimizer = torch.optim.LBFGS(model.parameters(), lr=kwargs['lr'])
+    optimizer = construct_optimizer(optimizer=kwargs['optim'],
+                                    model=model,
+                                    lr=kwargs['lr'])
 
     if kwargs['resume'] != '':
         kwargs['start_epoch'], best_prec1, total_steps, model, optimizer = resume_from_checkpoint(resume_path=kwargs['resume'],
@@ -411,6 +412,12 @@ def train_mlp(**kwargs):
                          print_freq=kwargs['print_freq'],
                          shape=[-1, 784],
                          writer=writer)
+
+        if kwargs['restart'] and epoch % kwargs['restart_interval'] == 0:
+            print('Restarting optimizer...')
+            optimizer = construct_optimizer(optimizer=kwargs['restart_optim'],
+                                            model=model,
+                                            lr=kwargs['restart_lr'])
 
         is_best = prec1 > best_prec1
         if is_best:
@@ -469,7 +476,11 @@ def train_mlp(**kwargs):
 @click.option('--thres_std', type=list, default=[0.2, 0.5, 1.0])
 @click.option('--clip_var', default=False)
 @click.option('--type_net', type=click.Choice(['hs', 'gauss', 'dropout', 'map', 'kernel', 'kernelbayes', 'orth', 'orthbayes']), default='map')
-@click.option('--optim', type=click.Choice(['adam', 'agsd', 'lbfgs']), default='adam')
+@click.option('--optim', type=click.Choice(['adam', 'adadelta', 'adagrad', 'adamax', 'rmsprop', 'rprop', 'sgd', 'cocob', 'ftml']), default='adadelta')
+@click.option('--restart', type=bool, default=False)
+@click.option('--restart_interval', type=int, default=100)
+@click.option('--restart_optim', type=click.Choice(['adam', 'adadelta', 'adagrad', 'adamax', 'rmsprop', 'rprop', 'sgd', 'cocob', 'ftml']), default='adadelta')
+@click.option('--restart_lr', default=0.001, type=float)
 @click.option('--anneal_kl', default=False)
 @click.option('--epzero', type=int, default=0)
 @click.option('--epmax', type=int, default=100)
@@ -511,12 +522,9 @@ def train_lenet(**kwargs):
         if torch.cuda.is_available():
             model = model.cuda()
 
-    if kwargs['optim'] == 'adam':
-        optimizer = torch.optim.Adam(model.parameters(), lr=kwargs['lr'])
-    elif kwargs['optim'] == 'agsd':
-        optimizer = torch.optim.ASGD(model.parameters(), lr=kwargs['lr'])
-    else:
-        optimizer = torch.optim.LBFGS(model.parameters(), lr=kwargs['lr'])
+    optimizer = construct_optimizer(optimizer=kwargs['optim'],
+                                    model=model,
+                                    lr=kwargs['lr'])
 
     if kwargs['resume'] != '':
         kwargs['start_epoch'], best_prec1, total_steps, model, optimizer = resume_from_checkpoint(resume_path=kwargs['resume'],
@@ -555,6 +563,12 @@ def train_lenet(**kwargs):
                          epoch=epoch,
                          print_freq=kwargs['print_freq'],
                          writer=writer)
+
+        if kwargs['restart'] and epoch % kwargs['restart_interval'] == 0:
+            print('Restarting optimizer...')
+            optimizer = construct_optimizer(optimizer=kwargs['restart_optim'],
+                                            model=model,
+                                            lr=kwargs['restart_lr'])
 
         is_best = prec1 > best_prec1
         if is_best:
@@ -602,7 +616,7 @@ def train_lenet(**kwargs):
 @click.option('--epochs', default=300, type=int)
 @click.option('--start_epoch', default=0, type=int)
 @click.option('--batch_size', default=100, type=int)
-@click.option('--lr', default=0.01, type=float)
+@click.option('--lr', default=0.001, type=float)
 @click.option('--momentum', default=0.9, type=float)
 @click.option('--print_freq', default=100, type=int)
 @click.option('--resume', default='', type=str)
@@ -612,7 +626,11 @@ def train_lenet(**kwargs):
 @click.option('--thres_std', type=list, default=[0.2, 0.5, 1.0])
 @click.option('--clip_var', default=False)
 @click.option('--type_net', type=click.Choice(['hs', 'gauss', 'dropout', 'map', 'kernel', 'kernelbayes', 'orth', 'orthbayes']), default='map')
-@click.option('--optim', type=click.Choice(['adam', 'agsd', 'lbfgs']), default='adam')
+@click.option('--optim', type=click.Choice(['adam', 'adadelta', 'adagrad', 'adamax', 'rmsprop', 'rprop', 'sgd', 'cocob', 'ftml']), default='adadelta')
+@click.option('--restart', type=bool, default=False)
+@click.option('--restart_interval', type=int, default=100)
+@click.option('--restart_optim', type=click.Choice(['adam', 'adadelta', 'adagrad', 'adamax', 'rmsprop', 'rprop', 'sgd', 'cocob', 'ftml']), default='adadelta')
+@click.option('--restart_lr', default=0.001, type=float)
 @click.option('--anneal_kl', default=False)
 @click.option('--epzero', type=int, default=0)
 @click.option('--epmax', type=int, default=100)
@@ -654,12 +672,9 @@ def train_basecnn(**kwargs):
         if torch.cuda.is_available():
             model = model.cuda()
 
-    if kwargs['optim'] == 'adam':
-        optimizer = torch.optim.Adam(model.parameters(), lr=kwargs['lr'])
-    elif kwargs['optim'] == 'agsd':
-        optimizer = torch.optim.ASGD(model.parameters(), lr=kwargs['lr'])
-    else:
-        optimizer = torch.optim.LBFGS(model.parameters(), lr=kwargs['lr'])
+    optimizer = construct_optimizer(optimizer=kwargs['optim'],
+                                    model=model,
+                                    lr=kwargs['lr'])
 
     if kwargs['resume'] != '':
         kwargs['start_epoch'], best_prec1, total_steps, model, optimizer = resume_from_checkpoint(resume_path=kwargs['resume'],
@@ -698,6 +713,12 @@ def train_basecnn(**kwargs):
                          epoch=epoch,
                          print_freq=kwargs['print_freq'],
                          writer=writer)
+
+        if kwargs['restart'] and epoch % kwargs['restart_interval'] == 0:
+            print('Restarting optimizer...')
+            optimizer = construct_optimizer(optimizer=kwargs['restart_optim'],
+                                            model=model,
+                                            lr=kwargs['restart_lr'])
 
         is_best = prec1 > best_prec1
         if is_best:
