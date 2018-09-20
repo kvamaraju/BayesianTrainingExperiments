@@ -47,7 +47,7 @@ class CrossEntropyLossWithAnnealing:
             total_loss = loss + model.kl_div(annealing=annealing,
                                              type_anneal=self._anneal_type)
 
-        loss2 = torch.norm(torch.norm(output[1], 2).mean() - torch.norm(output[2], 2).mean(), 2).mul(10.)\
+        loss2 = torch.norm(torch.norm(output[1], 2).mean() - torch.norm(output[2], 2).mean(), 2).mul(10.)
         total_loss += loss2
         if torch.cuda.is_available():
             total_loss = total_loss.cuda()
