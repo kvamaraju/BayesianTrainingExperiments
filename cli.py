@@ -195,7 +195,7 @@ def train_single_epoch(train_loader: object,
             else:
                 optimizer.step()
 
-        prec1 = accuracy(output.data, target, topk=(1,))[0]
+        prec1 = accuracy(output[0].data, target, topk=(1,))[0]
         losses.update(loss.item(), input_.size(0))
         top1.update(prec1, input_.size(0))
 
@@ -267,7 +267,7 @@ def validate(val_loader: object,
         else:
             loss = criterion(output, target_var, model)
 
-        prec1 = accuracy(output.data, target, topk=(1,))[0]
+        prec1 = accuracy(output[0].data, target, topk=(1,))[0]
         losses.update(loss.item(), input_.size(0))
         top1.update(prec1, input_.size(0))
 

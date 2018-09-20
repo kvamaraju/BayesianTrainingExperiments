@@ -56,7 +56,7 @@ class MLP(nn.Module):
             self.steps_ema = 0.
 
     def forward(self, x):
-        return self.output(x)
+        return self.output(x), x.var(), self.output[3](self.output[2](self.output[1](self.output[0](x)))).var() #self.output[1](self.output[0](x)).var() #self.output[3](self.output[2](self.output[1](self.output[0](x))))
 
     def kl_div(self, annealing=1., type_anneal='kl'):
         logps, logqs, aux_kls = 0., 0., 0.

@@ -27,7 +27,7 @@ class CrossEntropyLossWithAnnealing:
         self._writer = writer
 
     def __call__(self, output, target_var, model):
-        loss = self._loglikelihood(output, target_var)
+        loss = self._loglikelihood(output[0], target_var)
         annealing = 1.
         if self._anneal_kl:
             annealing = kl_linear(self._epzero,
@@ -46,6 +46,9 @@ class CrossEntropyLossWithAnnealing:
         else:
             total_loss = loss + model.kl_div(annealing=annealing,
                                              type_anneal=self._anneal_type)
+
+        loss2 = torch.norm(torch.norm(output[1], 2).mean() - torch.norm(output[2], 2).mean(), 2).mul(10.)\
+        total_loss += loss2
         if torch.cuda.is_available():
             total_loss = total_loss.cuda()
         return total_loss

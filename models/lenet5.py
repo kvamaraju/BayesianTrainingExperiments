@@ -69,7 +69,7 @@ class LeNet5(nn.Module):
     def forward(self, x):
         o = self.convs(x)
         o = o.view(o.size(0), -1)
-        return self.fcs(o)
+        return self.fcs(o), x.var(), self.fcs[2](self.fcs[1](self.fcs[0](o))).var()
 
     def kl_div(self, annealing=1., type_anneal='kl'):
         logps, logqs, aux_kls = 0., 0., 0.
