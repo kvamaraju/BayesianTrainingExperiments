@@ -3,9 +3,11 @@ import os
 import shutil
 import time
 
+import numpy as np
+
 from utils import AverageMeter, accuracy, construct_optimizer
 from models import MLP, LeNet5, BaseCNN
-from losses import CrossEntropyLossWithAnnealing, CrossEntropyLossWithMMD
+from losses import CrossEntropyLossWithAnnealing
 from optimizers import VProp
 
 import torch
@@ -329,6 +331,8 @@ def cli():
 @click.option('--beta_ema', type=float, default=0.)
 @click.option('--ldims', type=list, default=[1024, 1024])
 @click.option('--ep_anneal', type=int, default=10)
+@click.option('--use_mask', type=bool, default=True)
+@click.option('--mask_prob', type=float, default=0.5)
 @click.option('--save_at', type=list, default=[1, 10, 50, 100])
 @click.option('--device', type=int, default=0)
 def train_mlp(**kwargs):
@@ -342,13 +346,23 @@ def train_mlp(**kwargs):
 
     train_loader, val_loader, iter_per_epoch = load_mnist(batch_size=kwargs['batch_size'])
 
+    if kwargs['use_mask']:
+        if kwargs['type_net'] == 'map' or kwargs['type_net'] == 'gauss':
+            mask = [[np.random.binomial(n=1, p=kwargs['mask_prob'], size=p).astype('float32') for p in [(784, 1024), (1024,)]]]
+            mask.append([np.random.binomial(n=1, p=kwargs['mask_prob'], size=p).astype('float32') for p in [(1024, 1024), (1024,)]])
+        else:
+            mask = None
+    else:
+        mask = None
+
     model = MLP(input_dim=784,
                 num_classes=10,
                 layer_dims=kwargs['ldims'],
                 type_net=kwargs['type_net'],
                 N=60000,
                 dof=kwargs['dof'],
-                beta_ema=kwargs['beta_ema'])
+                beta_ema=kwargs['beta_ema'],
+                mask=mask)
 
     num_parameters = sum([p.data.nelement() for p in model.parameters()])
     print(f'Number of model parameters: {num_parameters}')
@@ -389,8 +403,6 @@ def train_mlp(**kwargs):
                                                       epmax=kwargs['epmax'],
                                                       anneal_maxval=kwargs['anneal_maxval'],
                                                       writer=writer)
-
-    # loss_function = CrossEntropyLossWithMMD(num_samples=2)
 
     for epoch in range(kwargs['start_epoch'], kwargs['epochs']):
         total_steps = train_single_epoch(train_loader=train_loader,
@@ -489,6 +501,8 @@ def train_mlp(**kwargs):
 @click.option('--anneal_schedule', type=click.Choice(['linear']), default='linear')
 @click.option('--dof', type=float, default=1.)
 @click.option('--beta_ema', type=float, default=0.)
+@click.option('--use_mask', type=bool, default=True)
+@click.option('--mask_prob', type=float, default=0.5)
 @click.option('--save_at', type=list, default=[1, 10, 50, 100])
 @click.option('--device', type=int, default=0)
 def train_lenet(**kwargs):
@@ -502,11 +516,22 @@ def train_lenet(**kwargs):
 
     train_loader, val_loader, iter_per_epoch = load_mnist(batch_size=kwargs['batch_size'])
 
+    if kwargs['use_mask']:
+        if kwargs['type_net'] == 'map' or kwargs['type_net'] == 'gauss':
+            mask = [[np.random.binomial(n=1, p=kwargs['mask_prob'], size=p).astype('float32') for p in [(32, 1, 5, 5), (32,)]]]
+            mask.append([np.random.binomial(n=1, p=kwargs['mask_prob'], size=p).astype('float32') for p in [(64, 32, 5, 5), (64,)]])
+            mask.append([np.random.binomial(n=1, p=kwargs['mask_prob'], size=p).astype('float32') for p in [(1024, 512), (512,)]])
+        else:
+            mask = None
+    else:
+        mask = None
+
     model = LeNet5(num_classes=10,
                    type_net=kwargs['type_net'],
                    N=60000,
                    beta_ema=kwargs['beta_ema'],
-                   dof=kwargs['dof'])
+                   dof=kwargs['dof'],
+                   mask=mask)
 
     num_parameters = sum([p.data.nelement() for p in model.parameters()])
     print(f'Number of model parameters: {num_parameters}')
@@ -639,6 +664,8 @@ def train_lenet(**kwargs):
 @click.option('--anneal_schedule', type=click.Choice(['linear']), default='linear')
 @click.option('--dof', type=float, default=1.)
 @click.option('--beta_ema', type=float, default=0.)
+@click.option('--use_mask', type=bool, default=True)
+@click.option('--mask_prob', type=float, default=0.5)
 @click.option('--save_at', type=list, default=[1, 10, 50, 100])
 @click.option('--device', type=int, default=0)
 def train_basecnn(**kwargs):
@@ -652,11 +679,24 @@ def train_basecnn(**kwargs):
 
     train_loader, val_loader, iter_per_epoch = load_cifar10(batch_size=kwargs['batch_size'])
 
+    if kwargs['use_mask']:
+        if kwargs['type_net'] == 'map' or kwargs['type_net'] == 'gauss':
+            mask = [[np.random.binomial(n=1, p=kwargs['mask_prob'], size=p).astype('float32') for p in [(96, 3, 5, 5), (96,)]]]
+            mask.append([np.random.binomial(n=1, p=kwargs['mask_prob'], size=p).astype('float32') for p in [(128, 96, 5, 5), (128,)]])
+            mask.append([np.random.binomial(n=1, p=kwargs['mask_prob'], size=p).astype('float32') for p in [(256, 128, 5, 5), (256,)]])
+            mask.append([np.random.binomial(n=1, p=kwargs['mask_prob'], size=p).astype('float32') for p in [(2304, 2048), (2048,)]])
+            mask.append([np.random.binomial(n=1, p=kwargs['mask_prob'], size=p).astype('float32') for p in [(2048, 2048), (2048,)]])
+        else:
+            mask = None
+    else:
+        mask = None
+
     model = BaseCNN(num_classes=10,
                     model_size=1,
                     type_net=kwargs['type_net'],
                     N=50000,
-                    beta_ema=kwargs['beta_ema'])
+                    beta_ema=kwargs['beta_ema'],
+                    mask=mask)
 
     num_parameters = sum([p.data.nelement() for p in model.parameters()])
     print(f'Number of model parameters: {num_parameters}')

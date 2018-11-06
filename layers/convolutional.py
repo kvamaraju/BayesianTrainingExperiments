@@ -147,7 +147,7 @@ class HSConv2d(Module):
 
 class FFGaussConv2d(Module):
     def __init__(self, in_channels, out_channels, kernel_size, stride=1, padding=0, dilation=1, groups=1, bias=True,
-                 prior_std=1, **kwargs):
+                 prior_std=1, mask=None, **kwargs):
         super(FFGaussConv2d, self).__init__()
         if in_channels % groups != 0:
             raise ValueError('in_channels must be divisible by groups')
@@ -171,6 +171,15 @@ class FFGaussConv2d(Module):
             self.logvar_bias = Parameter(torch.Tensor(out_channels))
             self.use_bias = True
         self.floatTensor = torch.FloatTensor if not torch.cuda.is_available() else torch.cuda.FloatTensor
+
+        if mask is not None:
+            self.weight_mask = self.floatTensor(torch.from_numpy(mask[0]))
+            if bias:
+                self.bias_mask = self.floatTensor(torch.from_numpy(mask[1]))
+        else:
+            self.weight_mask = None
+            self.bias_mask = None
+
         self.reset_parameters()
         print(self)
 
@@ -187,19 +196,33 @@ class FFGaussConv2d(Module):
             self.logvar_bias.data.clamp_(max=2. * math.log(thres_std))
 
     def eq_logpw(self):
-        logpw = - .5 * math.log(2 * math.pi * self.prior_std**2) - .5 * self.logvar_w.exp().div(self.prior_std**2)
-        logpw -= .5 * self.mean_w.pow(2).div(self.prior_std**2)
+        if self.weight_mask is not None:
+            logpw = - .5 * math.log(2 * math.pi * self.prior_std**2) - .5 * self.logvar_w.exp().mul(self.weight_mask).div(self.prior_std**2)
+            logpw -= .5 * self.mean_w.mul(self.weight_mask).pow(2).div(self.prior_std**2)
+        else:
+            logpw = - .5 * math.log(2 * math.pi * self.prior_std ** 2) - .5 * self.logvar_w.exp().mul(self.weight_mask).div(self.prior_std ** 2)
+            logpw -= .5 * self.mean_w.mul(self.weight_mask).pow(2).div(self.prior_std ** 2)
         logpb = 0.
         if self.use_bias:
-            logpb = - .5 * math.log(2 * math.pi * self.prior_std**2) - .5 * self.logvar_bias.exp().div(self.prior_std**2)
-            logpb -= .5 * self.mean_bias.pow(2).div(self.prior_std**2)
+            if self.bias_mask is not None:
+                logpb = - .5 * math.log(2 * math.pi * self.prior_std**2) - .5 * self.logvar_bias.exp().mul(self.bias_mask).div(self.prior_std**2)
+                logpb -= .5 * self.mean_bias.mul(self.bias_mask).pow(2).div(self.prior_std**2)
+            else:
+                logpb = - .5 * math.log(2 * math.pi * self.prior_std**2) - .5 * self.logvar_bias.exp().div(self.prior_std**2)
+                logpb -= .5 * self.mean_bias.pow(2).div(self.prior_std**2)
         return torch.sum(logpw) + torch.sum(logpb)
 
     def eq_logqw(self):
-        logqw = - torch.sum(.5 * (math.log(2 * math.pi) + self.logvar_w + 1))
+        if self.weight_mask is not None:
+            logqw = - torch.sum(.5 * (math.log(2 * math.pi) + self.logvar_w.mul(self.weight_mask) + 1))
+        else:
+            logqw = - torch.sum(.5 * (math.log(2 * math.pi) + self.logvar_w + 1))
         logqb = 0.
         if self.use_bias:
-            logqb = - torch.sum(.5 * (math.log(2 * math.pi) + self.logvar_bias + 1))
+            if self.bias_mask is not None:
+                logqb = - torch.sum(.5 * (math.log(2 * math.pi) + self.logvar_bias.mul(self.bias_mask) + 1))
+            else:
+                logqb = - torch.sum(.5 * (math.log(2 * math.pi) + self.logvar_bias + 1))
         return logqw + logqb
 
     def kldiv_aux(self):
@@ -218,6 +241,8 @@ class FFGaussConv2d(Module):
         if self.training:
             eps = self.get_eps(self.mean_w.size())
             W = W.add(eps.mul(self.logvar_w.mul(0.5).exp_()))
+        if self.weight_mask is not None:
+            W = W.mul(self.weight_mask)
         return W
 
     def sample_b(self):
@@ -227,6 +252,8 @@ class FFGaussConv2d(Module):
         if self.training:
             eps = self.get_eps(self.mean_bias.size())
             b = b.add(eps.mul(self.logvar_bias.mul(0.5).exp_()))
+        if self.bias_mask is not None:
+            b = b.mul(self.bias_mask)
         return b
 
     def forward(self, input_):
@@ -339,7 +366,7 @@ class DropoutConv2d(ConvNd):
 
 class MAPConv2d(ConvNd):
     def __init__(self, in_channels, out_channels, kernel_size, stride=1, padding=0, dilation=1, groups=1, bias=True,
-                 weight_decay=1., **kwargs):
+                 weight_decay=1., mask=None, **kwargs):
         kernel_size = pair(kernel_size)
         stride = pair(stride)
         padding = pair(padding)
@@ -348,6 +375,15 @@ class MAPConv2d(ConvNd):
         self.floatTensor = torch.FloatTensor if not torch.cuda.is_available() else torch.cuda.FloatTensor
         super(MAPConv2d, self).__init__(in_channels, out_channels, kernel_size, stride, padding, dilation, False,
                                         pair(0), groups, bias)
+
+        if mask is not None:
+            self.weight_mask = self.floatTensor(torch.from_numpy(mask[0]))
+            if bias:
+                self.bias_mask = self.floatTensor(torch.from_numpy(mask[1]))
+        else:
+            self.weight_mask = None
+            self.bias_mask = None
+
         self.reset_parameters()
         print(self)
 
@@ -360,10 +396,16 @@ class MAPConv2d(ConvNd):
         pass
 
     def eq_logpw(self, **kwargs):
-        logpw = - torch.sum(self.weight_decay * .5 * (self.weight.pow(2)))
+        if self.weight_mask is not None:
+            logpw = - torch.sum(self.weight_decay * .5 * (self.weight.mul(self.weight_mask).pow(2)))
+        else:
+            logpw = - torch.sum(self.weight_decay * .5 * (self.weight.pow(2)))
         logpb = 0
         if self.bias is not None:
-            logpb = - torch.sum(self.weight_decay * .5 * (self.bias.pow(2)))
+            if self.bias_mask is not None:
+                logpb = - torch.sum(self.weight_decay * .5 * (self.bias.mul(self.bias_mask).pow(2)))
+            else:
+                logpb = - torch.sum(self.weight_decay * .5 * (self.bias.pow(2)))
         return logpw + logpb
 
     def eq_logqw(self):
@@ -376,7 +418,10 @@ class MAPConv2d(ConvNd):
         return self.kldiv_aux() + self.eq_logpw() - self.eq_logqw()
 
     def forward(self, input_):
-        output = F.conv2d(input_, self.weight, self.bias, self.stride, self.padding, self.dilation, self.groups)
+        if self.weight_mask is not None:
+            output = F.conv2d(input_, self.weight.mul(self.weight_mask), self.bias.mul(self.bias_mask), self.stride, self.padding, self.dilation, self.groups)
+        else:
+            output = F.conv2d(input_, self.weight, self.bias, self.stride, self.padding, self.dilation, self.groups)
         return output
 
     def __repr__(self):

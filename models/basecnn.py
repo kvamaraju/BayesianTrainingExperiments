@@ -7,7 +7,7 @@ from copy import deepcopy
 
 class BaseCNN(nn.Module):
     def __init__(self, num_classes, input_size=(3, 32, 32), conv_dims=(96, 128, 256), fc_dims=(2048, 2048),
-                 model_size=1, type_net='hs', N=50000, beta_ema=0.):
+                 model_size=1, type_net='hs', N=50000, beta_ema=0., mask=None):
         super(BaseCNN, self).__init__()
         # assert(len(conv_dims) == 3)
         # assert(len(fc_dims) == 2)
@@ -48,25 +48,46 @@ class BaseCNN(nn.Module):
         else:
             raise Exception()
 
-        convs = []
-        for i, dim in enumerate(self.conv_dims):
-            in_channels = input_size[0] if i == 0 else self.conv_dims[i - 1] * self.model_size
-            droprate = self.droprates[i]
-            convs += [self.conv_layer(in_channels, dim * self.model_size, self.kernel_sizes[i], droprate=droprate,
-                                      padding=2, prior_std_z=self.prior_stds_z[i]),
-                      nn.ReLU(), nn.MaxPool2d(3, stride=2)]
-        self.convs = nn.Sequential(*convs)
-        if torch.cuda.is_available():
-            self.convs = self.convs.cuda()
+        if mask is not None:
+            convs = []
+            for i, dim in enumerate(self.conv_dims):
+                in_channels = input_size[0] if i == 0 else self.conv_dims[i - 1] * self.model_size
+                droprate = self.droprates[i]
+                convs += [self.conv_layer(in_channels, dim * self.model_size, self.kernel_sizes[i], droprate=droprate,
+                                          padding=2, prior_std_z=self.prior_stds_z[i], mask=mask[i]),
+                          nn.ReLU(), nn.MaxPool2d(3, stride=2)]
+            self.convs = nn.Sequential(*convs)
+            if torch.cuda.is_available():
+                self.convs = self.convs.cuda()
 
-        flat_fts = get_flat_fts(input_size, self.convs)
-        fcs = [self.fc_layer(flat_fts, self.fc_dims[0] * model_size,
-                             prior_std_z=self.prior_stds_z[-3]), nn.ReLU(),
-               self.fc_layer(self.fc_dims[0] * model_size, self.fc_dims[1] * model_size,
-                             prior_std_z=self.prior_stds_z[-2]), nn.ReLU(),
-               self.fc_layer(self.fc_dims[-1] * model_size, num_classes,
-                             prior_std_z=self.prior_stds_z[-1])]
-        self.fcs = nn.Sequential(*fcs)
+            flat_fts = get_flat_fts(input_size, self.convs)
+            fcs = [self.fc_layer(flat_fts, self.fc_dims[0] * model_size,
+                                 prior_std_z=self.prior_stds_z[-3], mask=mask[3]), nn.ReLU(),
+                   self.fc_layer(self.fc_dims[0] * model_size, self.fc_dims[1] * model_size,
+                                 prior_std_z=self.prior_stds_z[-2], mask=mask[4]), nn.ReLU(),
+                   self.fc_layer(self.fc_dims[-1] * model_size, num_classes,
+                                 prior_std_z=self.prior_stds_z[-1])]
+            self.fcs = nn.Sequential(*fcs)
+        else:
+            convs = []
+            for i, dim in enumerate(self.conv_dims):
+                in_channels = input_size[0] if i == 0 else self.conv_dims[i - 1] * self.model_size
+                droprate = self.droprates[i]
+                convs += [self.conv_layer(in_channels, dim * self.model_size, self.kernel_sizes[i], droprate=droprate,
+                                          padding=2, prior_std_z=self.prior_stds_z[i]),
+                          nn.ReLU(), nn.MaxPool2d(3, stride=2)]
+            self.convs = nn.Sequential(*convs)
+            if torch.cuda.is_available():
+                self.convs = self.convs.cuda()
+
+            flat_fts = get_flat_fts(input_size, self.convs)
+            fcs = [self.fc_layer(flat_fts, self.fc_dims[0] * model_size,
+                                 prior_std_z=self.prior_stds_z[-3]), nn.ReLU(),
+                   self.fc_layer(self.fc_dims[0] * model_size, self.fc_dims[1] * model_size,
+                                 prior_std_z=self.prior_stds_z[-2]), nn.ReLU(),
+                   self.fc_layer(self.fc_dims[-1] * model_size, num_classes,
+                                 prior_std_z=self.prior_stds_z[-1])]
+            self.fcs = nn.Sequential(*fcs)
 
         self.layers = []
         for m in self.modules():

@@ -5,7 +5,7 @@ from copy import deepcopy
 
 
 class MLP(nn.Module):
-    def __init__(self, input_dim, num_classes, layer_dims=(1024, 1024), type_net='hs', N=50000, dof=1., beta_ema=0.):
+    def __init__(self, input_dim, num_classes, layer_dims=(1024, 1024), type_net='hs', N=50000, dof=1., beta_ema=0., mask=None):
         super(MLP, self).__init__()
         self.layer_dims = layer_dims
         self.input_dim = input_dim
@@ -33,16 +33,29 @@ class MLP(nn.Module):
         else:
             raise Exception()
 
-        layers = []
-        for i, dimh in enumerate(self.layer_dims):
-            inp_dim = self.input_dim if i == 0 else self.layer_dims[i - 1]
-            droprate = 0.2 if i == 0 else 0.5
-            layers += [self.fc_layer(inp_dim, dimh, droprate=droprate, dof=self.dof, prior_std_z=self.priors_std_z[i]),
-                       nn.ReLU()]
+        if mask is not None:
+            layers = []
+            for i, dimh in enumerate(self.layer_dims):
+                inp_dim = self.input_dim if i == 0 else self.layer_dims[i - 1]
+                droprate = 0.2 if i == 0 else 0.5
+                layers += [
+                    self.fc_layer(inp_dim, dimh, droprate=droprate, dof=self.dof, prior_std_z=self.priors_std_z[i], mask=mask[i]),
+                    nn.ReLU()]
 
-        layers.append(self.fc_layer(self.layer_dims[-1], num_classes, dof=self.dof, prior_std_z=self.priors_std_z[-1]))
+            layers.append(
+                self.fc_layer(self.layer_dims[-1], num_classes, dof=self.dof, prior_std_z=self.priors_std_z[-1]))
+        else:
+            layers = []
+            for i, dimh in enumerate(self.layer_dims):
+                inp_dim = self.input_dim if i == 0 else self.layer_dims[i - 1]
+                droprate = 0.2 if i == 0 else 0.5
+                layers += [self.fc_layer(inp_dim, dimh, droprate=droprate, dof=self.dof, prior_std_z=self.priors_std_z[i]),
+                           nn.ReLU()]
+
+            layers.append(self.fc_layer(self.layer_dims[-1], num_classes, dof=self.dof, prior_std_z=self.priors_std_z[-1]))
+
+
         self.output = nn.Sequential(*layers)
-
         self.layers = []
         for m in self.modules():
             if isinstance(m, self.fc_layer):

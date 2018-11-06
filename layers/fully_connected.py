@@ -141,7 +141,7 @@ class HSDense(Module):
 
 class FFGaussDense(Module):
 
-    def __init__(self, in_features, out_features, bias=True, prior_std=1., **kwargs):
+    def __init__(self, in_features, out_features, bias=True, prior_std=1., mask=None, **kwargs):
         super(FFGaussDense, self).__init__()
         self.in_features = in_features
         self.out_features = out_features
@@ -153,7 +153,17 @@ class FFGaussDense(Module):
             self.mean_bias = Parameter(torch.Tensor(out_features))
             self.logvar_bias = Parameter(torch.Tensor(out_features))
             self.use_bias = True
+
         self.floatTensor = torch.FloatTensor if not torch.cuda.is_available() else torch.cuda.FloatTensor
+
+        if mask is not None:
+            self.weight_mask = self.floatTensor(torch.from_numpy(mask[0]))
+            if bias:
+                self.bias_mask = self.floatTensor(torch.from_numpy(mask[1]))
+        else:
+            self.weight_mask = None
+            self.bias_mask = None
+
         self.reset_parameters()
         print(self)
 
@@ -171,19 +181,35 @@ class FFGaussDense(Module):
             self.logvar_bias.data.clamp_(max=2. * math.log(thres_std))
 
     def eq_logpw(self):
-        logpw = - .5 * math.log(2 * math.pi * self.prior_std ** 2) - .5 * self.logvar_w.exp().div(self.prior_std ** 2)
-        logpw -= .5 * self.mean_w.pow(2).div(self.prior_std ** 2)
+        if self.weight_mask is not None:
+            logpw = - .5 * math.log(2 * math.pi * self.prior_std ** 2) - .5 * self.logvar_w.exp().mul(self.weight_mask).div(self.prior_std ** 2)
+            logpw -= .5 * self.mean_w.mul(self.weight_mask).pow(2).div(self.prior_std ** 2)
+        else:
+            logpw = - .5 * math.log(2 * math.pi * self.prior_std ** 2) - .5 * self.logvar_w.exp().div(self.prior_std ** 2)
+            logpw -= .5 * self.mean_w.pow(2).div(self.prior_std ** 2)
+
         logpb = 0.
         if self.use_bias:
-            logpb = - .5 * math.log(2 * math.pi * self.prior_std ** 2) - .5 * self.logvar_bias.exp().div(self.prior_std ** 2)
-            logpb -= .5 * self.mean_bias.pow(2).div(self.prior_std ** 2)
+            if self.bias_mask is not None:
+                logpb = - .5 * math.log(2 * math.pi * self.prior_std ** 2) - .5 * self.logvar_bias.exp().mul(self.bias_mask).div(self.prior_std ** 2)
+                logpb -= .5 * self.mean_bias.mul(self.bias_mask).pow(2).div(self.prior_std ** 2)
+            else:
+                logpb = - .5 * math.log(2 * math.pi * self.prior_std ** 2) - .5 * self.logvar_bias.exp().div(self.prior_std ** 2)
+                logpb -= .5 * self.mean_bias.pow(2).div(self.prior_std ** 2)
         return torch.sum(logpw) + torch.sum(logpb)
 
     def eq_logqw(self):
-        logqw = - torch.sum(.5 * (math.log(2 * math.pi) + self.logvar_w + 1))
+        if self.weight_mask is not None:
+            logqw = - torch.sum(.5 * (math.log(2 * math.pi) + self.logvar_w.mul(self.weight_mask) + 1))
+        else:
+            logqw = - torch.sum(.5 * (math.log(2 * math.pi) + self.logvar_w + 1))
+
         logqb = 0.
         if self.use_bias:
-            logqb = - torch.sum(.5 * (math.log(2 * math.pi) + self.logvar_bias + 1))
+            if self.bias_mask is not None:
+                logqb = - torch.sum(.5 * (math.log(2 * math.pi) + self.logvar_bias.mul(self.bias_mask) + 1))
+            else:
+                logqb = - torch.sum(.5 * (math.log(2 * math.pi) + self.logvar_bias + 1))
         return logqw + logqb
 
     def kldiv_aux(self):
@@ -208,6 +234,8 @@ class FFGaussDense(Module):
         if self.training:
             eps = self.get_eps(self.mean_w.size())
             w = w.add(eps.mul(self.logvar_w.mul(0.5).exp_()))
+        if self.weight_mask is not None:
+            w = w.mul(self.weight_mask)
         return w
 
     def sample_b(self):
@@ -215,18 +243,32 @@ class FFGaussDense(Module):
         if self.training:
             eps = self.get_eps(self.mean_bias.size())
             b = b.add(eps.mul(self.logvar_bias.mul(0.5).exp_()))
+        if self.bias_mask is not None:
+            b = b.mul(self.bias_mask)
         return b
 
     def get_mean_x(self, input):
-        mean_xin = input.mm(self.mean_w)
+        if self.weight_mask is not None:
+            mean_xin = input.mm(self.mean_w.mul(self.weight_mask))
+        else:
+            mean_xin = input.mm(self.mean_w)
         if self.use_bias:
-            mean_xin = mean_xin.add(self.mean_bias.view(1, self.out_features))
+            if self.bias_mask is not None:
+                mean_xin = mean_xin.add(self.mean_bias.mul(self.bias_mask).view(1, self.out_features))
+            else:
+                mean_xin = mean_xin.add(self.mean_bias.view(1, self.out_features))
         return mean_xin
 
     def get_var_x(self, input):
-        var_xin = input.pow(2).mm(self.logvar_w.exp())
+        if self.weight_mask is not None:
+            var_xin = input.pow(2).mm(self.logvar_w.exp().mul(self.weight_mask))
+        else:
+            var_xin = input.pow(2).mm(self.logvar_w.exp())
         if self.use_bias:
-            var_xin = var_xin.add(self.logvar_bias.exp().view(1, self.out_features))
+            if self.weight_mask is not None:
+                var_xin = var_xin.add(self.logvar_bias.exp().mul(self.bias_mask).view(1, self.out_features))
+            else:
+                var_xin = var_xin.add(self.logvar_bias.exp().view(1, self.out_features))
 
         return var_xin
 
@@ -322,8 +364,7 @@ class DropoutDense(Module):
 
 
 class MAPDense(Module):
-
-    def __init__(self, in_features, out_features, bias=True, weight_decay=1., **kwargs):
+    def __init__(self, in_features, out_features, bias=True, weight_decay=1., mask=None, **kwargs):
         super(MAPDense, self).__init__()
         self.in_features = in_features
         self.out_features = out_features
@@ -334,6 +375,15 @@ class MAPDense(Module):
         else:
             self.register_parameter('bias', None)
         self.floatTensor = torch.FloatTensor if not torch.cuda.is_available() else torch.cuda.FloatTensor
+
+        if mask is not None:
+            self.weight_mask = self.floatTensor(torch.from_numpy(mask[0]))
+            if bias:
+                self.bias_mask = self.floatTensor(torch.from_numpy(mask[1]))
+        else:
+            self.weight_mask = None
+            self.bias_mask = None
+
         self.reset_parameters()
         print(self)
 
@@ -347,10 +397,16 @@ class MAPDense(Module):
         pass
 
     def eq_logpw(self, **kwargs):
-        logpw = - torch.sum(self.weight_decay * .5 * (self.weight.pow(2)))
+        if self.weight_mask is not None:
+            logpw = - torch.sum(self.weight_decay * .5 * (self.weight.mul(self.weight_mask).pow(2)))
+        else:
+            logpw = - torch.sum(self.weight_decay * .5 * (self.weight.pow(2)))
         logpb = 0
         if self.bias is not None:
-            logpb = - torch.sum(self.weight_decay * .5 * (self.bias.pow(2)))
+            if self.bias_mask is not None:
+                logpb = - torch.sum(self.weight_decay * .5 * (self.bias.mul(self.bias_mask).pow(2)))
+            else:
+                logpb = - torch.sum(self.weight_decay * .5 * (self.bias.pow(2)))
         return logpw + logpb
 
     def eq_logqw(self):
@@ -363,9 +419,16 @@ class MAPDense(Module):
         return self.eq_logpw() - self.eq_logqw() + self.kldiv_aux()
 
     def forward(self, input):
-        output = input.mm(self.weight)
+        if self.weight_mask is not None:
+            output = input.mm(self.weight.mul(self.weight_mask))
+        else:
+            output = input.mm(self.weight)
+
         if self.bias is not None:
-            output.add_(self.bias.view(1, self.out_features).expand_as(output))
+            if self.bias_mask is not None:
+                output.add_(self.bias.view(1, self.out_features).mul(self.bias_mask.view(1, self.out_features)).expand_as(output))
+            else:
+                output.add_(self.bias.view(1, self.out_features).expand_as(output))
         return output
 
     def __repr__(self):

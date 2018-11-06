@@ -7,7 +7,7 @@ from copy import deepcopy
 
 class LeNet5(nn.Module):
     def __init__(self, num_classes, input_size=(1, 28, 28), conv_dims=(32, 64), fc_dims=512, type_net='hs',
-                 N=50000, beta_ema=0., dof=1.):
+                 N=50000, beta_ema=0., dof=1., mask=None):
         super(LeNet5, self).__init__()
         self.N = N
         assert(len(conv_dims) == 2)
@@ -43,16 +43,30 @@ class LeNet5(nn.Module):
         else:
             raise Exception()
 
-        convs = [self.conv_layer(in_channels=input_size[0], out_channels=conv_dims[0], kernel_size=5, droprate=0.5, dof=dof), nn.ReLU(), nn.MaxPool2d(2),
-                 self.conv_layer(in_channels=conv_dims[0], out_channels=conv_dims[1], kernel_size=5, droprate=0.5, dof=dof), nn.ReLU(), nn.MaxPool2d(2)]
-        self.convs = nn.Sequential(*convs)
-        if torch.cuda.is_available():
-            self.convs = self.convs.cuda()
+        if mask is not None:
+            convs = [self.conv_layer(in_channels=input_size[0], out_channels=conv_dims[0], kernel_size=5, droprate=0.5,
+                                     dof=dof, mask=mask[0]), nn.ReLU(), nn.MaxPool2d(2),
+                     self.conv_layer(in_channels=conv_dims[0], out_channels=conv_dims[1], kernel_size=5, droprate=0.5,
+                                     dof=dof, mask=mask[1]), nn.ReLU(), nn.MaxPool2d(2)]
+            self.convs = nn.Sequential(*convs)
+            if torch.cuda.is_available():
+                self.convs = self.convs.cuda()
 
-        flat_fts = get_flat_fts(input_size, self.convs)
-        fcs = [self.fc_layer(flat_fts, self.fc_dims, dof=dof), nn.ReLU(),
-               self.fc_layer(self.fc_dims, num_classes, dof=dof)]
-        self.fcs = nn.Sequential(*fcs)
+            flat_fts = get_flat_fts(input_size, self.convs)
+            fcs = [self.fc_layer(flat_fts, self.fc_dims, dof=dof, mask=mask[2]), nn.ReLU(),
+                   self.fc_layer(self.fc_dims, num_classes, dof=dof)]
+            self.fcs = nn.Sequential(*fcs)
+        else:
+            convs = [self.conv_layer(in_channels=input_size[0], out_channels=conv_dims[0], kernel_size=5, droprate=0.5, dof=dof), nn.ReLU(), nn.MaxPool2d(2),
+                     self.conv_layer(in_channels=conv_dims[0], out_channels=conv_dims[1], kernel_size=5, droprate=0.5, dof=dof), nn.ReLU(), nn.MaxPool2d(2)]
+            self.convs = nn.Sequential(*convs)
+            if torch.cuda.is_available():
+                self.convs = self.convs.cuda()
+
+            flat_fts = get_flat_fts(input_size, self.convs)
+            fcs = [self.fc_layer(flat_fts, self.fc_dims, dof=dof), nn.ReLU(),
+                   self.fc_layer(self.fc_dims, num_classes, dof=dof)]
+            self.fcs = nn.Sequential(*fcs)
 
         self.layers = []
         for m in self.modules():
