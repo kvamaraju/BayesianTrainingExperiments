@@ -377,9 +377,14 @@ class MAPConv2d(ConvNd):
                                         pair(0), groups, bias)
 
         if mask is not None:
-            self.weight_mask = self.floatTensor(torch.from_numpy(mask[0]))
-            if bias:
-                self.bias_mask = self.floatTensor(torch.from_numpy(mask[1]))
+            if torch.cuda.is_available():
+                self.weight_mask = self.floatTensor(torch.from_numpy(mask[0]).cuda())
+                if bias:
+                    self.bias_mask = self.floatTensor(torch.from_numpy(mask[1]).cuda())
+            else:
+                self.weight_mask = self.floatTensor(torch.from_numpy(mask[0]))
+                if bias:
+                    self.bias_mask = self.floatTensor(torch.from_numpy(mask[1]))
         else:
             self.weight_mask = None
             self.bias_mask = None
