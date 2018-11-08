@@ -803,10 +803,10 @@ def train_basecnn(**kwargs):
 
 
 @cli.command()
-@click.option('--epochs', default=300, type=int)
+@click.option('--epochs', default=100, type=int)
 @click.option('--start_epoch', default=0, type=int)
 @click.option('--batch_size', default=100, type=int)
-@click.option('--lr', default=0.001, type=float)
+@click.option('--lr', default=0.1, type=float)
 @click.option('--momentum', default=0.9, type=float)
 @click.option('--print_freq', default=100, type=int)
 @click.option('--resume', default='', type=str)
