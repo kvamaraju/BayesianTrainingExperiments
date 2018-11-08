@@ -6,7 +6,7 @@ import time
 import numpy as np
 
 from utils import AverageMeter, accuracy, construct_optimizer
-from models import MLP, LeNet5, BaseCNN
+from models import MLP, LeNet5, BaseCNN, resnet18
 from losses import CrossEntropyLossWithAnnealing
 from optimizers import VProp
 
@@ -787,6 +787,158 @@ def train_basecnn(**kwargs):
             if model.beta_ema > 0:
                 state['avg_params'] = model.avg_param
                 state['steps_ema'] = model.steps_ema
+
+        if epoch in kwargs['save_at']:
+            name = f'checkpoint_{epoch}.pth.tar'
+        else:
+            name = 'checkpoint.pth.tar'
+
+        save_checkpoint(state=state,
+                        is_best=is_best,
+                        name=name)
+    print('Best accuracy: ', best_prec1)
+
+    if writer is not None:
+        writer.close()
+
+
+@cli.command()
+@click.option('--epochs', default=300, type=int)
+@click.option('--start_epoch', default=0, type=int)
+@click.option('--batch_size', default=100, type=int)
+@click.option('--lr', default=0.001, type=float)
+@click.option('--momentum', default=0.9, type=float)
+@click.option('--print_freq', default=100, type=int)
+@click.option('--resume', default='', type=str)
+@click.option('--name', default='Basecnn', type=str)
+@click.option('--tensorboard', type=bool, default=False)
+@click.option('--multi_gpu', default=False)
+@click.option('--thres_std', type=list, default=[0.2, 0.5, 1.0])
+@click.option('--clip_var', default=False)
+@click.option('--type_net', type=click.Choice(['hs', 'gauss', 'dropout', 'map', 'kernel', 'kernelbayes', 'orth', 'orthbayes']), default='map')
+@click.option('--optim', type=click.Choice(['adam', 'adadelta', 'adagrad', 'adamax', 'rmsprop', 'rprop', 'sgd', 'cocob', 'ftml']), default='adadelta')
+@click.option('--restart', type=bool, default=False)
+@click.option('--restart_interval', type=int, default=100)
+@click.option('--restart_optim', type=click.Choice(['adam', 'adadelta', 'adagrad', 'adamax', 'rmsprop', 'rprop', 'sgd', 'cocob', 'ftml']), default='adadelta')
+@click.option('--restart_lr', default=0.001, type=float)
+@click.option('--anneal_kl', default=False)
+@click.option('--epzero', type=int, default=0)
+@click.option('--epmax', type=int, default=100)
+@click.option('--anneal_maxval', type=float, default=1.)
+@click.option('--anneal_type', type=click.Choice(['kl', 'q', 'none']), default='kl')
+@click.option('--anneal_schedule', type=click.Choice(['linear']), default='linear')
+@click.option('--dof', type=float, default=1.)
+@click.option('--beta_ema', type=float, default=0.)
+@click.option('--use_mask', type=bool, default=True)
+@click.option('--mask_prob', type=float, default=0.5)
+@click.option('--save_at', type=list, default=[1, 10, 50, 100])
+@click.option('--device', type=int, default=0)
+def train_resnet(**kwargs):
+    if kwargs['tensorboard']:
+        name, directory = set_directory(name=kwargs['name'],
+                                        type_net=kwargs['type_net'],
+                                        dof=kwargs['dof'])
+        writer = SummaryWriter(directory)
+    else:
+        writer = None
+
+    train_loader, val_loader, iter_per_epoch = load_cifar10(batch_size=kwargs['batch_size'])
+
+    # if kwargs['use_mask']:
+    #     if kwargs['type_net'] == 'map' or kwargs['type_net'] == 'gauss':
+    #         mask = [[np.random.binomial(n=1, p=kwargs['mask_prob'], size=p).astype('float32') for p in [(96, 3, 5, 5), (96,)]]]
+    #         mask.append([np.random.binomial(n=1, p=kwargs['mask_prob'], size=p).astype('float32') for p in [(128, 96, 5, 5), (128,)]])
+    #         mask.append([np.random.binomial(n=1, p=kwargs['mask_prob'], size=p).astype('float32') for p in [(256, 128, 5, 5), (256,)]])
+    #         mask.append([np.random.binomial(n=1, p=kwargs['mask_prob'], size=p).astype('float32') for p in [(2304, 2048), (2048,)]])
+    #         mask.append([np.random.binomial(n=1, p=kwargs['mask_prob'], size=p).astype('float32') for p in [(2048, 2048), (2048,)]])
+    #     else:
+    #         mask = None
+    # else:
+    #     mask = None
+
+    model = resnet18(type_net=kwargs['type_net'])
+
+    num_parameters = sum([p.data.nelement() for p in model.parameters()])
+    print(f'Number of model parameters: {num_parameters}')
+
+    if torch.cuda.is_available():
+        torch.cuda.set_device(kwargs['device'])
+
+    # for training on multiple GPUs.
+    # Use CUDA_VISIBLE_DEVICES=0,1 to specify which GPUs to use
+    if kwargs['multi_gpu']:
+        model = torch.nn.DataParallel(model).cuda()
+    else:
+        if torch.cuda.is_available():
+            model = model.cuda()
+
+    optimizer = construct_optimizer(optimizer=kwargs['optim'],
+                                    model=model,
+                                    lr=kwargs['lr'])
+
+    if kwargs['resume'] != '':
+        kwargs['start_epoch'], best_prec1, total_steps, model, optimizer = resume_from_checkpoint(resume_path=kwargs['resume'],
+                                                                                                  model=model,
+                                                                                                  optimizer=optimizer)
+    else:
+        total_steps = 0
+        best_prec1 = 0.
+
+    cudnn.benchmark = True
+
+    loss_function = CrossEntropyLossWithAnnealing(iter_per_epoch=iter_per_epoch,
+                                                  total_steps=total_steps,
+                                                  anneal_type=kwargs['anneal_type'],
+                                                  anneal_kl=kwargs['anneal_kl'],
+                                                  epzero=kwargs['epzero'],
+                                                  epmax=kwargs['epmax'],
+                                                  anneal_maxval=kwargs['anneal_maxval'],
+                                                  writer=writer)
+
+    for epoch in range(kwargs['start_epoch'], kwargs['epochs']):
+        total_steps = train_single_epoch(train_loader=train_loader,
+                                         model=model,
+                                         criterion=loss_function,
+                                         optimizer=optimizer,
+                                         epoch=epoch,
+                                         clip_var=kwargs['clip_var'],
+                                         total_steps=total_steps,
+                                         print_freq=kwargs['print_freq'],
+                                         writer=writer,
+                                         thres_stds=kwargs['thres_std'])
+
+        prec1 = validate(val_loader=val_loader,
+                         model=model,
+                         criterion=loss_function,
+                         epoch=epoch,
+                         print_freq=kwargs['print_freq'],
+                         writer=writer)
+
+        if kwargs['restart'] and epoch % kwargs['restart_interval'] == 0:
+            print('Restarting optimizer...')
+            optimizer = construct_optimizer(optimizer=kwargs['restart_optim'],
+                                            model=model,
+                                            lr=kwargs['restart_lr'])
+
+        is_best = prec1 > best_prec1
+        if is_best:
+            best_prec1 = prec1
+        if isinstance(model, torch.nn.DataParallel):
+            state = {
+                'epoch': epoch + 1,
+                'state_dict': model.state_dict(),
+                'best_prec1': max(prec1, best_prec1),
+                'optimizer': optimizer.state_dict(),
+                'total_steps': total_steps
+            }
+        else:
+            state = {
+                'epoch': epoch + 1,
+                'state_dict': model.state_dict(),
+                'best_prec1': max(prec1, best_prec1),
+                'optimizer': optimizer.state_dict(),
+                'total_steps': total_steps
+            }
 
         if epoch in kwargs['save_at']:
             name = f'checkpoint_{epoch}.pth.tar'

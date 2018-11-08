@@ -205,9 +205,9 @@ class FFGaussConv2d(Module):
             logpw = - .5 * math.log(2 * math.pi * self.prior_std**2) - .5 * self.logvar_w.exp().mul(self.weight_mask).div(self.prior_std**2)
             logpw -= .5 * self.mean_w.mul(self.weight_mask).pow(2).div(self.prior_std**2)
         else:
-            logpw = - .5 * math.log(2 * math.pi * self.prior_std ** 2) - .5 * self.logvar_w.exp().mul(self.weight_mask).div(self.prior_std ** 2)
-            logpw -= .5 * self.mean_w.mul(self.weight_mask).pow(2).div(self.prior_std ** 2)
-        logpb = 0.
+            logpw = - .5 * math.log(2 * math.pi * self.prior_std ** 2) - .5 * self.logvar_w.exp().div(self.prior_std ** 2)
+            logpw -= .5 * self.mean_w.pow(2).div(self.prior_std ** 2)
+
         if self.use_bias:
             if self.bias_mask is not None:
                 logpb = - .5 * math.log(2 * math.pi * self.prior_std**2) - .5 * self.logvar_bias.exp().mul(self.bias_mask).div(self.prior_std**2)
@@ -215,7 +215,8 @@ class FFGaussConv2d(Module):
             else:
                 logpb = - .5 * math.log(2 * math.pi * self.prior_std**2) - .5 * self.logvar_bias.exp().div(self.prior_std**2)
                 logpb -= .5 * self.mean_bias.pow(2).div(self.prior_std**2)
-        return torch.sum(logpw) + torch.sum(logpb)
+            return torch.sum(logpw) + torch.sum(logpb)
+        return torch.sum(logpw)
 
     def eq_logqw(self):
         if self.weight_mask is not None:
