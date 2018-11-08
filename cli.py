@@ -6,7 +6,7 @@ import time
 import numpy as np
 
 from utils import AverageMeter, accuracy, construct_optimizer
-from models import MLP, LeNet5, BaseCNN, resnet18
+from models import MLP, LeNet5, BaseCNN, resnet
 from losses import CrossEntropyLossWithAnnealing
 from optimizers import VProp
 
@@ -856,7 +856,7 @@ def train_resnet(**kwargs):
     # else:
     #     mask = None
 
-    model = resnet18(type_net=kwargs['type_net'])
+    model = resnet(type_net=kwargs['type_net'])
 
     num_parameters = sum([p.data.nelement() for p in model.parameters()])
     print(f'Number of model parameters: {num_parameters}')
