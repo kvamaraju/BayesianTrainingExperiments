@@ -387,10 +387,14 @@ class MAPConv2d(ConvNd):
                 self.weight_mask = self.floatTensor(torch.from_numpy(mask[0]).cuda())
                 if bias:
                     self.bias_mask = self.floatTensor(torch.from_numpy(mask[1]).cuda())
+                else:
+                    self.bias_mask = None
             else:
                 self.weight_mask = self.floatTensor(torch.from_numpy(mask[0]))
                 if bias:
                     self.bias_mask = self.floatTensor(torch.from_numpy(mask[1]))
+                else:
+                    self.bias_mask = None
         else:
             self.weight_mask = None
             self.bias_mask = None
@@ -429,8 +433,10 @@ class MAPConv2d(ConvNd):
         return self.kldiv_aux() + self.eq_logpw() - self.eq_logqw()
 
     def forward(self, input_):
-        if self.weight_mask is not None:
+        if (self.weight_mask is not None) and (self.bias_mask is not None):
             output = F.conv2d(input_, self.weight.mul(self.weight_mask), self.bias.mul(self.bias_mask), self.stride, self.padding, self.dilation, self.groups)
+        elif self.weight_mask is not None:
+            output = F.conv2d(input_, self.weight.mul(self.weight_mask), self.bias, self.stride, self.padding, self.dilation, self.groups)
         else:
             output = F.conv2d(input_, self.weight, self.bias, self.stride, self.padding, self.dilation, self.groups)
         return output

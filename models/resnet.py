@@ -56,18 +56,19 @@ class Bottleneck(nn.Module):
 
     def __init__(self, conv_layer, inplanes, planes, stride=1, downsample=None, mask=None):
         super(Bottleneck, self).__init__()
+
         if mask is not None:
-            self.conv1 = conv1x1(conv_layer, inplanes, planes, mask[0])
+            self.conv1 = conv1x1(conv_layer, inplanes, planes, mask=mask[0])
         else:
             self.conv1 = conv1x1(conv_layer, inplanes, planes)
         self.bn1 = nn.BatchNorm2d(planes)
         if mask is not None:
-            self.conv2 = conv3x3(conv_layer, planes, planes, stride, mask[1])
+            self.conv2 = conv3x3(conv_layer, planes, planes, stride, mask=mask[1])
         else:
             self.conv2 = conv3x3(conv_layer, planes, planes, stride)
         self.bn2 = nn.BatchNorm2d(planes)
         if mask is not None:
-            self.conv3 = conv1x1(conv_layer, planes, planes * self.expansion, mask[2])
+            self.conv3 = conv1x1(conv_layer, planes, planes * self.expansion, mask=mask[2])
         else:
             self.conv3 = conv1x1(conv_layer, planes, planes * self.expansion)
         self.bn3 = nn.BatchNorm2d(planes * self.expansion)
@@ -139,13 +140,14 @@ class ResNet(nn.Module):
             self.conv1 = self.conv_layer(3, 64, kernel_size=7, stride=2, padding=3, bias=False, droprate=0.5,
                                          prior_std_z=1., mask=mask[0])
         else:
-            self.conv1 = self.conv_layer(3, 64, kernel_size=7, stride=2, padding=3, bias=False, droprate=0.5, prior_std_z=1., mask=None)
+            self.conv1 = self.conv_layer(3, 64, kernel_size=7, stride=2, padding=3, bias=False, droprate=0.5, prior_std_z=1.)
 
         self.layers.append(self.conv1)
 
         self.bn1 = nn.BatchNorm2d(64)
         self.relu = nn.ReLU(inplace=True)
         self.maxpool = nn.MaxPool2d(kernel_size=3, stride=2, padding=1)
+
         if mask is not None:
             self.layer1, l1 = self._make_layer(block, 64, layers[0], mask=mask[1])
             self.layer2, l2 = self._make_layer(block, 128, layers[1], stride=2, mask=mask[2])
@@ -163,7 +165,10 @@ class ResNet(nn.Module):
         self.layers += l4
 
         self.avgpool = nn.AdaptiveAvgPool2d((1, 1))
-        self.fc = self.fc_layer(512 * block.expansion, num_classes)
+        if mask is not None:
+            self.fc = self.fc_layer(512 * block.expansion, num_classes, mask=mask[5])
+        else:
+            self.fc = self.fc_layer(512 * block.expansion, num_classes)
 
         self.layers.append(self.fc)
 
@@ -194,11 +199,12 @@ class ResNet(nn.Module):
             layers_.append(downsample[0])
 
         layers = []
+
         if mask is not None:
             layers.append(block(self.conv_layer, self.inplanes, planes, stride, downsample, mask=mask[mask0]))
             self.inplanes = planes * block.expansion
             for i in range(1, blocks):
-                layers.append(block(self.inplanes, planes, mask=mask[mask0+i]))
+                layers.append(block(self.conv_layer, self.inplanes, planes, mask=mask[mask0+i]))
         else:
             layers.append(block(self.conv_layer, self.inplanes, planes, stride, downsample))
             self.inplanes = planes * block.expansion

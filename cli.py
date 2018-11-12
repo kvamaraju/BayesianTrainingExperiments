@@ -806,7 +806,7 @@ def train_basecnn(**kwargs):
 @click.option('--epochs', default=100, type=int)
 @click.option('--start_epoch', default=0, type=int)
 @click.option('--batch_size', default=100, type=int)
-@click.option('--lr', default=0.1, type=float)
+@click.option('--lr', default=0.01, type=float)
 @click.option('--momentum', default=0.9, type=float)
 @click.option('--print_freq', default=100, type=int)
 @click.option('--resume', default='', type=str)
@@ -844,19 +844,71 @@ def train_resnet(**kwargs):
 
     train_loader, val_loader, iter_per_epoch = load_cifar10(batch_size=kwargs['batch_size'])
 
-    # if kwargs['use_mask']:
-    #     if kwargs['type_net'] == 'map' or kwargs['type_net'] == 'gauss':
-    #         mask = [[np.random.binomial(n=1, p=kwargs['mask_prob'], size=p).astype('float32') for p in [(96, 3, 5, 5), (96,)]]]
-    #         mask.append([np.random.binomial(n=1, p=kwargs['mask_prob'], size=p).astype('float32') for p in [(128, 96, 5, 5), (128,)]])
-    #         mask.append([np.random.binomial(n=1, p=kwargs['mask_prob'], size=p).astype('float32') for p in [(256, 128, 5, 5), (256,)]])
-    #         mask.append([np.random.binomial(n=1, p=kwargs['mask_prob'], size=p).astype('float32') for p in [(2304, 2048), (2048,)]])
-    #         mask.append([np.random.binomial(n=1, p=kwargs['mask_prob'], size=p).astype('float32') for p in [(2048, 2048), (2048,)]])
-    #     else:
-    #         mask = None
-    # else:
-    #     mask = None
+    if kwargs['use_mask']:
+        if kwargs['type_net'] == 'map' or kwargs['type_net'] == 'gauss':
+            mask = [[np.random.binomial(n=1, p=kwargs['mask_prob'], size=p).astype('float32') for p in [[64, 3, 7, 7]]]]
+            mask.append([[np.random.binomial(n=1, p=kwargs['mask_prob'], size=p).astype('float32') for p in [[256, 64, 1, 1]]],
+                        [[np.random.binomial(n=1, p=kwargs['mask_prob'], size=p).astype('float32') for p in [[64, 64, 1, 1]]],
+                        [np.random.binomial(n=1, p=kwargs['mask_prob'], size=p).astype('float32') for p in [[64, 64, 3, 3]]],
+                        [np.random.binomial(n=1, p=kwargs['mask_prob'], size=p).astype('float32') for p in [[256, 64, 1, 1]]]],
+                        [[np.random.binomial(n=1, p=kwargs['mask_prob'], size=p).astype('float32') for p in [[64, 256, 1, 1]]],
+                        [np.random.binomial(n=1, p=kwargs['mask_prob'], size=p).astype('float32') for p in [[64, 64, 3, 3]]],
+                        [np.random.binomial(n=1, p=kwargs['mask_prob'], size=p).astype('float32') for p in [[256, 64, 1, 1]]]],
+                        [[np.random.binomial(n=1, p=kwargs['mask_prob'], size=p).astype('float32') for p in [[64, 256, 1, 1]]],
+                        [np.random.binomial(n=1, p=kwargs['mask_prob'], size=p).astype('float32') for p in [[64, 64, 3, 3]]],
+                        [np.random.binomial(n=1, p=kwargs['mask_prob'], size=p).astype('float32') for p in [[256, 64, 1, 1]]]]])
+            mask.append([[np.random.binomial(n=1, p=kwargs['mask_prob'], size=p).astype('float32') for p in [[512, 256, 1, 1]]],
+                        [[np.random.binomial(n=1, p=kwargs['mask_prob'], size=p).astype('float32') for p in [[128, 256, 1, 1]]],
+                        [np.random.binomial(n=1, p=kwargs['mask_prob'], size=p).astype('float32') for p in [[128, 128, 3, 3]]],
+                        [np.random.binomial(n=1, p=kwargs['mask_prob'], size=p).astype('float32') for p in [[512, 128, 1, 1]]]],
+                        [[np.random.binomial(n=1, p=kwargs['mask_prob'], size=p).astype('float32') for p in [[128, 512, 1, 1]]],
+                        [np.random.binomial(n=1, p=kwargs['mask_prob'], size=p).astype('float32') for p in [[128, 128, 3, 3]]],
+                        [np.random.binomial(n=1, p=kwargs['mask_prob'], size=p).astype('float32') for p in [[512, 128, 1, 1]]]],
+                        [[np.random.binomial(n=1, p=kwargs['mask_prob'], size=p).astype('float32') for p in [[128, 512, 1, 1]]],
+                        [np.random.binomial(n=1, p=kwargs['mask_prob'], size=p).astype('float32') for p in [[128, 128, 3, 3]]],
+                        [np.random.binomial(n=1, p=kwargs['mask_prob'], size=p).astype('float32') for p in [[512, 128, 1, 1]]]],
+                        [[np.random.binomial(n=1, p=kwargs['mask_prob'], size=p).astype('float32') for p in [[128, 512, 1, 1]]],
+                         [np.random.binomial(n=1, p=kwargs['mask_prob'], size=p).astype('float32') for p in [[128, 128, 3, 3]]],
+                         [np.random.binomial(n=1, p=kwargs['mask_prob'], size=p).astype('float32') for p in [[512, 128, 1, 1]]]]])
+            mask.append([[np.random.binomial(n=1, p=kwargs['mask_prob'], size=p).astype('float32') for p in [[1024, 512, 1, 1]]],
+                        [[np.random.binomial(n=1, p=kwargs['mask_prob'], size=p).astype('float32') for p in [[256, 512, 1, 1]]],
+                        [np.random.binomial(n=1, p=kwargs['mask_prob'], size=p).astype('float32') for p in [[256, 256, 3, 3]]],
+                        [np.random.binomial(n=1, p=kwargs['mask_prob'], size=p).astype('float32') for p in [[1024, 256, 1, 1]]]],
+                        [[np.random.binomial(n=1, p=kwargs['mask_prob'], size=p).astype('float32') for p in [[256, 1024, 1, 1]]],
+                        [np.random.binomial(n=1, p=kwargs['mask_prob'], size=p).astype('float32') for p in [[256, 256, 3, 3]]],
+                        [np.random.binomial(n=1, p=kwargs['mask_prob'], size=p).astype('float32') for p in [[1024, 256, 1, 1]]]],
+                        [[np.random.binomial(n=1, p=kwargs['mask_prob'], size=p).astype('float32') for p in [[256, 1024, 1, 1]]],
+                        [np.random.binomial(n=1, p=kwargs['mask_prob'], size=p).astype('float32') for p in [[256, 256, 3, 3]]],
+                        [np.random.binomial(n=1, p=kwargs['mask_prob'], size=p).astype('float32') for p in [[1024, 256, 1, 1]]]],
+                        [[np.random.binomial(n=1, p=kwargs['mask_prob'], size=p).astype('float32') for p in [[256, 1024, 1, 1]]],
+                         [np.random.binomial(n=1, p=kwargs['mask_prob'], size=p).astype('float32') for p in [[256, 256, 3, 3]]],
+                         [np.random.binomial(n=1, p=kwargs['mask_prob'], size=p).astype('float32') for p in [[1024, 256, 1, 1]]]],
+                        [[np.random.binomial(n=1, p=kwargs['mask_prob'], size=p).astype('float32') for p in [[256, 1024, 1, 1]]],
+                         [np.random.binomial(n=1, p=kwargs['mask_prob'], size=p).astype('float32') for p in [[256, 256, 3, 3]]],
+                         [np.random.binomial(n=1, p=kwargs['mask_prob'], size=p).astype('float32') for p in [[1024, 256, 1, 1]]]],
+                        [[np.random.binomial(n=1, p=kwargs['mask_prob'], size=p).astype('float32') for p in [[256, 1024, 1, 1]]],
+                         [np.random.binomial(n=1, p=kwargs['mask_prob'], size=p).astype('float32') for p in [[256, 256, 3, 3]]],
+                         [np.random.binomial(n=1, p=kwargs['mask_prob'], size=p).astype('float32') for p in [[1024, 256, 1, 1]]]]])
+            mask.append([[np.random.binomial(n=1, p=kwargs['mask_prob'], size=p).astype('float32') for p in [[2048, 1024, 1, 1]]],
+                        [[np.random.binomial(n=1, p=kwargs['mask_prob'], size=p).astype('float32') for p in [[512, 1024, 1, 1]]],
+                        [np.random.binomial(n=1, p=kwargs['mask_prob'], size=p).astype('float32') for p in [[512, 512, 3, 3]]],
+                        [np.random.binomial(n=1, p=kwargs['mask_prob'], size=p).astype('float32') for p in [[2048, 512, 1, 1]]]],
+                        [[np.random.binomial(n=1, p=kwargs['mask_prob'], size=p).astype('float32') for p in [[512, 2048, 1, 1]]],
+                        [np.random.binomial(n=1, p=kwargs['mask_prob'], size=p).astype('float32') for p in [[512, 512, 3, 3]]],
+                        [np.random.binomial(n=1, p=kwargs['mask_prob'], size=p).astype('float32') for p in [[2048, 512, 1, 1]]]],
+                        [[np.random.binomial(n=1, p=kwargs['mask_prob'], size=p).astype('float32') for p in [[512, 2048, 1, 1]]],
+                        [np.random.binomial(n=1, p=kwargs['mask_prob'], size=p).astype('float32') for p in [[512, 512, 3, 3]]],
+                        [np.random.binomial(n=1, p=kwargs['mask_prob'], size=p).astype('float32') for p in [[2048, 512, 1, 1]]]]])
+            mask.append([np.random.binomial(n=1, p=kwargs['mask_prob'], size=p).astype('float32') for p in [[2048, 10], [10]]])
+        else:
+            mask = None
+    else:
+        mask = None
 
-    model = resnet(type_net=kwargs['type_net'])
+    if kwargs['use_mask']:
+        model = resnet(type_net=kwargs['type_net'], mask=mask)
+    else:
+        model = resnet(type_net=kwargs['type_net'])
 
     num_parameters = sum([p.data.nelement() for p in model.parameters()])
     print(f'Number of model parameters: {num_parameters}')
